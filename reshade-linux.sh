@@ -141,7 +141,7 @@ cat > /dev/null <<DESCRIPTION
             ex.: UPDATE_RESHADE=0 ./reshade-linux.sh
 
         MAIN_PATH
-            By default, this script stores all it's files, inlcuding ReShade and the shaders in XDG_DATA_HOME/reshade ($HOME/.local/share/reshade)
+            By default, this script stores all its files, including ReShade and the shaders in XDG_DATA_HOME/reshade ($HOME/.local/share/reshade)
             You can override this by setting the MAIN_PATH variable.
             ex.: MAIN_PATH=~/Documents/reshade ./reshade-linux.sh
 
@@ -150,13 +150,13 @@ cat > /dev/null <<DESCRIPTION
             By default this is set to :
                 https://github.com/CeeJayDK/SweetFX|sweetfx-shaders;https://github.com/martymcmodding/qUINT|martymc-shaders;https://github.com/BlueSkyDefender/AstrayFX|astrayfx-shaders;https://github.com/prod80/prod80-ReShade-Repository|prod80-shaders;https://github.com/crosire/reshade-shaders|reshade-shaders|slim
             The format is (the branch is optional) : URI|local_repo_name|branch
-            Use ; to seperate multiple repo's. For example: URI1|local_repo_name_1|master;URI2|local_repo_name_2
+            Use ; to separate multiple repos. For example: URI1|local_repo_name_1|master;URI2|local_repo_name_2
 
         MERGE_SHADERS
             If you're using multiple shader repositories, all the unique shaders will be put into one folder called Merged.
             For example, if you use reshade-shaders and sweetfx-shaders, both have ASCII.fx,
               by enabling MERGE_SHADERS, only 1 ASCII.fx is put into the Merged folder.
-            The order of importance for shaders is taken from SHADER_REPOS.
+            The order of priority for shaders is taken from SHADER_REPOS.
             The default is MERGE_SHADERS=1
             To disable, set MERGE_SHADERS=0
 
@@ -279,8 +279,8 @@ function downloadD3dcompiler_47() {
     [[ $1 -eq 32 ]] && hash="d6edb4ff0a713f417ebd19baedfe07527c6e45e84a6c73ed8c66a33377cc0aca" || hash="721977f36c008af2b637aedd3f1b529f3cfed6feb10f68ebe17469acb1934986"
     ffhash=$(sha256sum Firefox*.exe | cut -d\  -f1)
     [[ "$ffhash" != "$hash" ]] && printErr "(downloadD3dcompiler_47) Firefox integrity check failed. (Expected: $hash ; Calculated: $ffhash)"
-    7z -y e Firefox*.exe 1> /dev/null || printErr "(dowloadD3dcompiler_47) Failed to extract Firefox using 7z."
-    cp d3dcompiler_47.dll "$MAIN_PATH/d3dcompiler_47.dll.$1" || printErr "(downloadD3dcompiler_47): Unable to find d3dcompiler_47.dll"
+    7z -y e Firefox*.exe 1> /dev/null || printErr "(downloadD3dcompiler_47) Failed to extract Firefox using 7z."
+    cp d3dcompiler_47.dll "$MAIN_PATH/d3dcompiler_47.dll.$1" || printErr "(downloadD3dcompiler_47) Unable to find d3dcompiler_47.dll"
     removeTempDir
 }
 
@@ -302,7 +302,7 @@ function downloadReshade() {
     removeTempDir
 }
 
-SEPERATOR="------------------------------------------------------------------------------------------------"
+SEPARATOR="------------------------------------------------------------------------------------------------"
 COMMON_OVERRIDES="d3d8 d3d9 d3d11 ddraw dinput8 dxgi opengl32"
 REQUIRED_EXECUTABLES="7z curl git grep"
 XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
@@ -356,7 +356,7 @@ mkdir -p "$MAIN_PATH/External_shaders"
 [[ $UPDATE_RESHADE == 1 ]] && date +%s > LASTUPDATED
 # Z0005
 
-echo -e "$SEPERATOR\nReShade installer/updater for Linux games using wine or proton.\n$SEPERATOR\n"
+echo -e "$SEPARATOR\nReShade installer/updater for Linux games using wine or proton.\n$SEPARATOR\n"
 
 # Z0010
 # Link Shader / Texture files from an input directory to an output directory if the link doesn't already exist.
@@ -401,12 +401,13 @@ if [[ -n $SHADER_REPOS ]]; then
             if [[ $UPDATE_RESHADE -eq 1 ]]; then
                 cd "$MAIN_PATH/ReShade_shaders/$localRepoName" || continue
                 echo "Updating ReShade shader repository $URI."
-                git pull || echo "Could not update shader repo: $URI."
+                git pull --ff-only || echo "Could not update shader repo: $URI."
             fi
         else
             cd "$MAIN_PATH/ReShade_shaders" || exit
-            [[ -n $branchName ]] && branchName="--branch $branchName" || branchName=
-            eval git clone "$branchName" "$URI" "$localRepoName" || echo "Could not clone Shader repo: $URI."
+            branchArgs=()
+            [[ -n $branchName ]] && branchArgs=(--branch "$branchName" --single-branch)
+            git clone --depth 1 "${branchArgs[@]}" "$URI" "$localRepoName" || echo "Could not clone Shader repo: $URI."
         fi
         [[ $MERGE_SHADERS == 1 ]] && mergeShaderDirs "ReShade_shaders" "$localRepoName"
     done
@@ -424,7 +425,7 @@ if [[ -n $SHADER_REPOS ]]; then
         done
     fi
 fi
-echo "$SEPERATOR"
+echo "$SEPARATOR"
 # Z0010
 
 # Z0015
@@ -437,7 +438,7 @@ if [[ $RESHADE_VERSION == latest ]]; then
     [[ ! $LVERS =~ Addon ]] && [[ $RESHADE_ADDON_SUPPORT -eq 1 ]] && UPDATE_RESHADE=1
 fi
 if [[ $FORCE_RESHADE_UPDATE_CHECK -eq 1 ]] || [[ $UPDATE_RESHADE -eq 1 ]] || [[ ! -e reshade/latest/ReShade64.dll ]] || [[ ! -e reshade/latest/ReShade32.dll ]]; then
-    echo -e "Checking for Reshade updates.\n$SEPERATOR"
+    echo -e "Checking for Reshade updates.\n$SEPARATOR"
     RHTML=$(curl --max-time 10 -sL "$RESHADE_URL")
     ALT_URL=0
     if [[ $? != 0 || $RHTML =~ '<h2>Something went wrong.</h2>' ]]; then
@@ -468,7 +469,7 @@ cd "$MAIN_PATH" || exit
 if [[ $RESHADE_VERSION != latest ]]; then
     [[ $RESHADE_ADDON_SUPPORT -eq 1 ]] && RESHADE_VERSION="${RESHADE_VERSION}_Addon"
     if [[ ! -f reshade/$RESHADE_VERSION/ReShade64.dll ]] || [[ ! -f reshade/$RESHADE_VERSION/ReShade32.dll ]]; then
-        echo -e "Downloading version $RESHADE_VERSION of ReShade.\n$SEPERATOR\n"
+        echo -e "Downloading version $RESHADE_VERSION of ReShade.\n$SEPARATOR\n"
         [[ -e reshade/$RESHADE_VERSION ]] && rm -rf "reshade/$RESHADE_VERSION"
         downloadReshade "$RESHADE_VERSION" "$RESHADE_URL/downloads/ReShade_Setup_$RESHADE_VERSION.exe"
     fi
@@ -520,7 +521,7 @@ if [[ $VULKAN_SUPPORT == 1 ]]; then
         else
             wine reg DELETE HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers -f /reg:"$exeArch"
         fi
-        [[ $? == 0 ]] && echo "Done." || echo "An error has occured."
+        [[ $? == 0 ]] && echo "Done." || echo "An error has occurred."
         exit 0
     fi
 fi
@@ -531,7 +532,8 @@ echo "Do you want to (i)nstall or (u)ninstall ReShade for a DirectX or OpenGL ga
 if [[ $(checkStdin "(i/u): " "^(i|u)$") == "u" ]]; then
     getGamePath
     echo "Unlinking ReShade files."
-    LINKS="$(echo "$COMMON_OVERRIDES" | sed 's/ /.dll /g' | sed 's/$/.dll/') ReShade.ini ReShade32.json ReShade64.json d3dcompiler_47.dll Shaders Textures ReShade_shaders ${LINK_PRESET}"
+    LINKS="$(echo "$COMMON_OVERRIDES" | sed 's/ /.dll /g' | sed 's/$/.dll/') ReShade.ini ReShade32.json ReShade64.json d3dcompiler_47.dll Shaders Textures ReShade_shaders"
+    [[ -n $LINK_PRESET ]] && LINKS="$LINKS $LINK_PRESET"
     for link in $LINKS; do
         if [[ -L $gamePath/$link ]]; then
             echo "Unlinking \"$gamePath/$link\"."
@@ -608,7 +610,7 @@ if [[ -f $MAIN_PATH/$LINK_PRESET ]]; then
 fi
 # Z0045
 
-echo -e "$SEPERATOR\nDone."
+echo -e "$SEPARATOR\nDone."
 gameEnvVar="WINEDLLOVERRIDES=\"d3dcompiler_47=n;$wantedDll=n,b\""
 echo -e "\e[40m\e[32mIf you're using Steam, right click the game, click properties, set the 'LAUNCH OPTIONS' to: \e[34m$gameEnvVar %command%"
 echo -e "\e[32mIf not, run the game with this environment variable set: \e[34m$gameEnvVar"
