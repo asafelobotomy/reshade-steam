@@ -280,19 +280,25 @@ function removeTempDir() {
 }
 
 # Downloads d3dcompiler_47.dll files.
+# Sources from mozilla/fxc2 GitHub, same source used by Winetricks.
 function downloadD3dcompiler_47() {
     ! [[ $1 =~ ^(32|64)$ ]] && printErr "(downloadD3dcompiler_47): Wrong system architecture."
     [[ -f $MAIN_PATH/d3dcompiler_47.dll.$1 ]] && return
     echo "Downloading d3dcompiler_47.dll for $1 bits."
     createTempDir
-    # Based on https://github.com/Winetricks/winetricks/commit/bc5c57d0d6d2c30642efaa7fee66b60f6af3e133
-    curl -sLO "https://download-installer.cdn.mozilla.net/pub/firefox/releases/62.0.3/win$1/ach/Firefox%20Setup%2062.0.3.exe" \
-        || echo "Could not download Firefox setup file (which contains d3dcompiler_47.dll)"
-    [[ $1 -eq 32 ]] && hash="d6edb4ff0a713f417ebd19baedfe07527c6e45e84a6c73ed8c66a33377cc0aca" || hash="721977f36c008af2b637aedd3f1b529f3cfed6feb10f68ebe17469acb1934986"
-    ffhash=$(sha256sum Firefox*.exe | cut -d\  -f1)
-    [[ "$ffhash" != "$hash" ]] && printErr "(downloadD3dcompiler_47) Firefox integrity check failed. (Expected: $hash ; Calculated: $ffhash)"
-    7z -y e Firefox*.exe 1> /dev/null || printErr "(downloadD3dcompiler_47) Failed to extract Firefox using 7z."
-    cp d3dcompiler_47.dll "$MAIN_PATH/d3dcompiler_47.dll.$1" || printErr "(downloadD3dcompiler_47) Unable to find d3dcompiler_47.dll"
+    if [[ $1 -eq 32 ]]; then
+        local url="https://raw.githubusercontent.com/mozilla/fxc2/master/dll/d3dcompiler_47_32.dll"
+        local hash="2ad0d4987fc4624566b190e747c9d95038443956ed816abfd1e2d389b5ec0851"
+    else
+        local url="https://raw.githubusercontent.com/mozilla/fxc2/master/dll/d3dcompiler_47.dll"
+        local hash="4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3"
+    fi
+    curl --fail -sLo d3dcompiler_47.dll "$url" \
+        || printErr "(downloadD3dcompiler_47) Could not download d3dcompiler_47.dll."
+    local dlhash
+    dlhash=$(sha256sum d3dcompiler_47.dll | cut -d' ' -f1)
+    [[ "$dlhash" != "$hash" ]] && printErr "(downloadD3dcompiler_47) Integrity check failed. (Expected: $hash ; Calculated: $dlhash)"
+    cp d3dcompiler_47.dll "$MAIN_PATH/d3dcompiler_47.dll.$1" || printErr "(downloadD3dcompiler_47) Unable to copy d3dcompiler_47.dll to $MAIN_PATH"
     removeTempDir
 }
 
@@ -337,7 +343,7 @@ function linkD3dcompilerToWineprefix() {
 }
 
 SEPARATOR="------------------------------------------------------------------------------------------------"
-COMMON_OVERRIDES="d3d8 d3d9 d3d11 ddraw dinput8 dxgi opengl32"
+COMMON_OVERRIDES="d3d8 d3d9 d3d11 d3d12 ddraw dinput8 dxgi opengl32"
 REQUIRED_EXECUTABLES=(7z curl git grep)
 XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
 MAIN_PATH=${MAIN_PATH:-"$XDG_DATA_HOME/reshade"}
@@ -356,7 +362,7 @@ RESHADE_VERSION=${RESHADE_VERSION:-"latest"}
 RESHADE_ADDON_SUPPORT=${RESHADE_ADDON_SUPPORT:-0}
 FORCE_RESHADE_UPDATE_CHECK=${FORCE_RESHADE_UPDATE_CHECK:-0}
 RESHADE_URL="https://reshade.me"
-RESHADE_URL_ALT="http://static.reshade.me"
+RESHADE_URL_ALT="https://static.reshade.me"
 WINEPREFIX=${WINEPREFIX:-""}
 
 for REQUIRED_EXECUTABLE in "${REQUIRED_EXECUTABLES[@]}"; do
@@ -477,7 +483,7 @@ if [[ $RESHADE_VERSION == latest ]]; then
     [[ ! $LVERS =~ Addon ]] && [[ $RESHADE_ADDON_SUPPORT -eq 1 ]] && UPDATE_RESHADE=1
 fi
 if [[ $FORCE_RESHADE_UPDATE_CHECK -eq 1 ]] || [[ $UPDATE_RESHADE -eq 1 ]] || [[ ! -e reshade/latest/ReShade64.dll ]] || [[ ! -e reshade/latest/ReShade32.dll ]]; then
-    echo -e "Checking for Reshade updates.\n$SEPARATOR"
+    echo -e "Checking for ReShade updates.\n$SEPARATOR"
     ALT_URL=0
     if ! RHTML=$(curl --fail --max-time 10 -sL "$RESHADE_URL") || [[ $RHTML == *'<h2>Something went wrong.</h2>'* ]]; then
         ALT_URL=1
