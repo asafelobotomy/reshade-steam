@@ -426,7 +426,7 @@ _GUI=0
 _CURL_PROG=(--progress-bar)
 [[ $_GUI -eq 1 ]] && _CURL_PROG=(--silent)
 COMMON_OVERRIDES="d3d8 d3d9 d3d11 d3d12 ddraw dinput8 dxgi opengl32"
-REQUIRED_EXECUTABLES=(7z curl git grep)
+REQUIRED_EXECUTABLES=(7z curl file git grep sed)
 XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
 # Auto-detect Flatpak vs native Steam when MAIN_PATH is not explicitly set by user.
 if [[ -z ${MAIN_PATH+x} ]]; then
@@ -485,7 +485,24 @@ WINEPREFIX=${WINEPREFIX:-""}
 
 for REQUIRED_EXECUTABLE in "${REQUIRED_EXECUTABLES[@]}"; do
     if ! command -v "$REQUIRED_EXECUTABLE" &>/dev/null; then
-        printf "Program '%s' is missing, but it is required.\nExiting.\n" "$REQUIRED_EXECUTABLE"
+        printf "Program '%s' is missing, but it is required.\n" "$REQUIRED_EXECUTABLE"
+        # Suggest a package name and the correct package manager for this distro.
+        case "$REQUIRED_EXECUTABLE" in
+            7z)   _pkg="p7zip-full" ;; # Fedora/Arch: p7zip
+            curl) _pkg="curl" ;;
+            file) _pkg="file" ;;
+            git)  _pkg="git" ;;
+            grep) _pkg="grep" ;;
+            sed)  _pkg="sed" ;;
+            *)    _pkg="$REQUIRED_EXECUTABLE" ;;
+        esac
+        if   command -v apt-get &>/dev/null; then printf '  Install with:  sudo apt-get install %s\n' "$_pkg"
+        elif command -v dnf     &>/dev/null; then printf '  Install with:  sudo dnf install %s\n'     "$_pkg"
+        elif command -v pacman  &>/dev/null; then printf '  Install with:  sudo pacman -S %s\n'       "$_pkg"
+        elif command -v zypper  &>/dev/null; then printf '  Install with:  sudo zypper install %s\n'  "$_pkg"
+        fi
+        unset _pkg
+        printf 'Exiting.\n'
         exit 1
     fi
 done
@@ -515,7 +532,13 @@ mkdir -p "$MAIN_PATH/External_shaders"
 # Skip updating shaders / reshade if recently done (4 hours).
 LASTUPDATED=0; [[ -f LASTUPDATED ]] && LASTUPDATED=$(< LASTUPDATED)
 [[ ! $LASTUPDATED =~ ^[0-9]+$ ]] && LASTUPDATED=0
-[[ $LASTUPDATED -gt 0 && $(($(date +%s)-LASTUPDATED)) -lt 14400 ]] && UPDATE_RESHADE=0
+if [[ $LASTUPDATED -gt 0 && $(($(date +%s)-LASTUPDATED)) -lt 14400 ]]; then
+    UPDATE_RESHADE=0
+    _ago=$(( ($(date +%s) - LASTUPDATED) / 60 ))
+    printf '%bSkipping update check (last checked %d min ago). Set FORCE_RESHADE_UPDATE_CHECK=1 to override.%b\n\n' \
+        "$_YLW" "$_ago" "$_R"
+    unset _ago
+fi
 [[ $UPDATE_RESHADE == 1 ]] && date +%s > LASTUPDATED
 # Z0005
 
@@ -635,7 +658,7 @@ cd "$MAIN_PATH" || exit
 if [[ $RESHADE_VERSION != latest ]]; then
     [[ $RESHADE_ADDON_SUPPORT -eq 1 ]] && RESHADE_VERSION="${RESHADE_VERSION}_Addon"
     if [[ ! -f reshade/$RESHADE_VERSION/ReShade64.dll ]] || [[ ! -f reshade/$RESHADE_VERSION/ReShade32.dll ]]; then
-        echo -e "Downloading version $RESHADE_VERSION of ReShade.\n$SEPARATOR\n"
+        printf 'Downloading version %s of ReShade.\n%s\n\n' "$RESHADE_VERSION" "$SEPARATOR"
         [[ -e reshade/$RESHADE_VERSION ]] && rm -rf "reshade/$RESHADE_VERSION"
         withProgress "Downloading ReShade $RESHADE_VERSION..." \
             downloadReshade "$RESHADE_VERSION" "$RESHADE_URL/downloads/ReShade_Setup_$RESHADE_VERSION.exe"
@@ -860,6 +883,31 @@ if [[ $wantedDll == "manual" ]]; then
 fi
 # Z0035
 
+# If WINEPREFIX was not set by the user or Vulkan path, try to auto-detect it
+# from the game path when the game lives under a Steam steamapps/common/ tree.
+if [[ -z $WINEPREFIX && $gamePath == */steamapps/common/* ]]; then
+    _steamRoot="${gamePath%/steamapps/common/*}"
+    _gameName="${gamePath##*/steamapps/common/}"
+    _gameName="${_gameName%%/*}"
+    # Locate the ACF manifest whose "installdir" matches this game folder name.
+    _acf=""
+    while IFS= read -r _f; do
+        if grep -qF "\"$_gameName\"" "$_f" 2>/dev/null; then
+            _acf="$_f"; break
+        fi
+    done < <(grep -rl '"installdir"' "$_steamRoot/steamapps/" 2>/dev/null)
+    if [[ -n $_acf ]]; then
+        _appid=$(grep -o '"appid"[[:space:]]*"[0-9]*"' "$_acf" 2>/dev/null \
+            | grep -o '[0-9]*' | head -1)
+        _pfx="$_steamRoot/steamapps/compatdata/$_appid/pfx"
+        if [[ -n $_appid && -d $_pfx ]]; then
+            export WINEPREFIX="$_pfx"
+            printf '%bAuto-detected WINEPREFIX:%b %s\n' "$_GRN" "$_R" "$WINEPREFIX"
+        fi
+    fi
+    unset _steamRoot _gameName _acf _appid _pfx
+fi
+
 # Z0040
 withProgress "Downloading d3dcompiler_47.dll ($exeArch-bit)..." \
     downloadD3dcompiler_47 "$exeArch"
@@ -892,6 +940,21 @@ fi
 # Z0045
 
 gameEnvVar="WINEDLLOVERRIDES=\"d3dcompiler_47=n;$wantedDll=n,b\""
+
+# In GUI mode, copy the Steam launch option to the clipboard if possible.
+_clipNote=""
+if [[ $_GUI -eq 1 ]]; then
+    _launchOpt="$gameEnvVar %command%"
+    if [[ -n ${WAYLAND_DISPLAY:-} ]] && command -v wl-copy &>/dev/null; then
+        printf '%s' "$_launchOpt" | wl-copy 2>/dev/null \
+            && _clipNote="\n\n<i>The Steam launch option has been copied to your clipboard.</i>"
+    elif [[ -n ${DISPLAY:-} ]] && command -v xclip &>/dev/null; then
+        printf '%s' "$_launchOpt" | xclip -selection clipboard 2>/dev/null \
+            && _clipNote="\n\n<i>The Steam launch option has been copied to your clipboard.</i>"
+    fi
+    unset _launchOpt
+fi
+
 printf '%b%s\n  Done!\n%s%b\n' "$_GRN$_B" "$SEPARATOR" "$SEPARATOR" "$_R"
 printf '\n%bSteam launch option%b (Game Properties → Launch Options):\n  %b%s %%command%%%b\n' \
     "$_GRN$_B" "$_R" "$_CYN$_B" "$gameEnvVar" "$_R"
@@ -926,6 +989,6 @@ if [[ $_GUI -eq 1 ]]; then
 In the ReShade overlay, open the <b>Settings</b> tab.
 Ensure shader/texture paths point inside:
 <tt>$MAIN_PATH/ReShade_shaders/Merged/</tt>
-Then go to the <b>Home</b> tab and click <b>Reload</b>.$_wineNote" \
+Then go to the <b>Home</b> tab and click <b>Reload</b>.$_wineNote$_clipNote" \
         --button="OK:0" --width=680 2>/dev/null
 fi
