@@ -364,8 +364,8 @@ function downloadD3dcompiler_47() {
     fi
     curl --fail -Lo "${_CURL_PROG[@]}" d3dcompiler_47.dll "$url" \
         || printErr "(downloadD3dcompiler_47) Could not download d3dcompiler_47.dll."
-    local dlhash
-    dlhash=$(sha256sum d3dcompiler_47.dll | cut -d' ' -f1)
+    local dlhash _
+    read -r dlhash _ < <(sha256sum d3dcompiler_47.dll)
     [[ "$dlhash" != "$hash" ]] && printErr "(downloadD3dcompiler_47) Integrity check failed. (Expected: $hash ; Calculated: $dlhash)"
     cp d3dcompiler_47.dll "$MAIN_PATH/d3dcompiler_47.dll.$1" || printErr "(downloadD3dcompiler_47) Unable to copy d3dcompiler_47.dll to $MAIN_PATH"
     removeTempDir
@@ -377,9 +377,9 @@ function downloadD3dcompiler_47() {
 function downloadReshade() {
     createTempDir
     curl --fail -LO "${_CURL_PROG[@]}" "$2" || printErr "Could not download version $1 of ReShade."
-    exeFile="$(find . -name "*.exe")"
+    exeFile="${2##*/}"
     ! [[ -f $exeFile ]] && printErr "Download of ReShade exe file failed."
-    [[ $(file "$exeFile" | grep -o executable) == "" ]] && printErr "The ReShade exe file is not an executable file, does the ReShade version exist?"
+    file "$exeFile" | grep -q executable || printErr "The ReShade exe file is not an executable file, does the ReShade version exist?"
     7z -y e "$exeFile" 1> /dev/null || printErr "Failed to extract ReShade using 7z."
     rm -f "$exeFile"
     resCurPath="$RESHADE_PATH/$1"
@@ -426,7 +426,7 @@ _GUI=0
 _CURL_PROG=(--progress-bar)
 [[ $_GUI -eq 1 ]] && _CURL_PROG=(--silent)
 COMMON_OVERRIDES="d3d8 d3d9 d3d11 d3d12 ddraw dinput8 dxgi opengl32"
-REQUIRED_EXECUTABLES=(7z curl file git grep sed)
+REQUIRED_EXECUTABLES=(7z curl file git grep sed sha256sum)
 XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
 # Auto-detect Flatpak vs native Steam when MAIN_PATH is not explicitly set by user.
 if [[ -z ${MAIN_PATH+x} ]]; then
@@ -492,9 +492,10 @@ for REQUIRED_EXECUTABLE in "${REQUIRED_EXECUTABLES[@]}"; do
             curl) _pkg="curl" ;;
             file) _pkg="file" ;;
             git)  _pkg="git" ;;
-            grep) _pkg="grep" ;;
-            sed)  _pkg="sed" ;;
-            *)    _pkg="$REQUIRED_EXECUTABLE" ;;
+            grep)      _pkg="grep" ;;
+            sed)       _pkg="sed" ;;
+            sha256sum) _pkg="coreutils" ;;
+            *)         _pkg="$REQUIRED_EXECUTABLE" ;;
         esac
         if   command -v apt-get &>/dev/null; then printf '  Install with:  sudo apt-get install %s\n' "$_pkg"
         elif command -v dnf     &>/dev/null; then printf '  Install with:  sudo dnf install %s\n'     "$_pkg"
@@ -637,10 +638,10 @@ if [[ $FORCE_RESHADE_UPDATE_CHECK -eq 1 ]] || [[ $UPDATE_RESHADE -eq 1 ]] || [[ 
         RHTML=$(curl --fail -sL "$RESHADE_URL_ALT") || echo "Error: Failed to connect to '$RESHADE_URL_ALT'."
     fi
     [[ $RESHADE_ADDON_SUPPORT -eq 1 ]] && VREGEX="[0-9][0-9.]*[0-9]_Addon" || VREGEX="[0-9][0-9.]*[0-9]"
-    RLINK="$(echo "$RHTML" | grep -o "/downloads/ReShade_Setup_${VREGEX}\.exe" | head -n1)"
+    RLINK="$(grep -o "/downloads/ReShade_Setup_${VREGEX}\.exe" <<< "$RHTML" | head -n1)"
     [[ $RLINK == "" ]] && printErr "Could not fetch ReShade version."
     [[ $ALT_URL -eq 1 ]] && RLINK="${RESHADE_URL_ALT}${RLINK}" || RLINK="${RESHADE_URL}${RLINK}"
-    RVERS=$(echo "$RLINK" | grep -o "$VREGEX")
+    RVERS=$(grep -o "$VREGEX" <<< "$RLINK")
     if [[ $RVERS != "$LVERS" ]]; then
         [[ -L $RESHADE_PATH/latest ]] && unlink "$RESHADE_PATH/latest"
         printf '%bUpdating ReShade to version %s...%b\n' "$_GRN" "$RVERS" "$_R"
@@ -674,10 +675,14 @@ if [[ $GLOBAL_INI != 0 ]] && [[ $GLOBAL_INI == ReShade.ini ]] && [[ ! -f $MAIN_P
     cd "$MAIN_PATH" || exit
     curl --fail -sLO https://github.com/asafelobotomy/reshade-steam-proton/raw/ini/ReShade.ini
     if [[ -f ReShade.ini ]]; then
-        sed -i "s/_USERSED_/$USER/g" "$MAIN_PATH/$GLOBAL_INI"
         if [[ $MERGE_SHADERS == 1 ]]; then
-            sed -i "s#_SHADSED_#$WINE_MAIN_PATH\\\ReShade_shaders\\\Merged\\\Shaders#g" "$MAIN_PATH/$GLOBAL_INI"
-            sed -i "s#_TEXSED_#$WINE_MAIN_PATH\\\ReShade_shaders\\\Merged\\\Textures#g" "$MAIN_PATH/$GLOBAL_INI"
+            sed -i \
+                -e "s/_USERSED_/$USER/g" \
+                -e "s#_SHADSED_#$WINE_MAIN_PATH\\\ReShade_shaders\\\Merged\\\Shaders#g" \
+                -e "s#_TEXSED_#$WINE_MAIN_PATH\\\ReShade_shaders\\\Merged\\\Textures#g" \
+                "$MAIN_PATH/$GLOBAL_INI"
+        else
+            sed -i "s/_USERSED_/$USER/g" "$MAIN_PATH/$GLOBAL_INI"
         fi
     fi
 fi
