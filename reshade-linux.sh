@@ -210,6 +210,17 @@ cat > /dev/null <<DESCRIPTION
             by default since it's currently not functional, you can enable this function by
             passing VULKAN_SUPPORT=1
             ex.: VULKAN_SUPPORT=1 ./reshade-linux.sh
+
+        WINEPREFIX
+            Since ReShade 6.5+, d3dcompiler_47.dll must also be present in the game's Wine/Proton
+            prefix (drive_c/windows/system32 for 64-bit games, or syswow64 for 32-bit games),
+            not only in the game folder. Without this, ReShade shaders will fail to compile.
+            Set WINEPREFIX to the path of the Wine/Proton prefix for the game to have this script
+            install d3dcompiler_47.dll there automatically.
+            For Steam games with Proton, the prefix is typically found at:
+            ~/.local/share/Steam/steamapps/compatdata/<AppID>/pfx
+            You can find your game's AppID on https://steamdb.info
+            ex.: WINEPREFIX="$HOME/.local/share/Steam/steamapps/compatdata/12345/pfx" ./reshade-linux.sh
 DESCRIPTION
 
 # Print error and exit
@@ -302,6 +313,28 @@ function downloadReshade() {
     removeTempDir
 }
 
+# Link d3dcompiler_47.dll into the Wine/Proton prefix system32 or syswow64 directory.
+# Since ReShade 6.5+, the DLL must exist there for shaders to compile correctly.
+# $1 is the exe architecture (32 or 64).
+function linkD3dcompilerToWineprefix() {
+    [[ -z $WINEPREFIX ]] && return
+    local arch="$1"
+    local sysDir
+    # 32-bit libraries go into syswow64 in a 64-bit prefix; 64-bit go into system32.
+    if [[ $arch -eq 32 ]] && [[ -d "$WINEPREFIX/drive_c/windows/syswow64" ]]; then
+        sysDir="$WINEPREFIX/drive_c/windows/syswow64"
+    else
+        sysDir="$WINEPREFIX/drive_c/windows/system32"
+    fi
+    if [[ ! -d $sysDir ]]; then
+        echo "Warning: Wine prefix directory '$sysDir' not found -- skipping system32 d3dcompiler_47.dll install."
+        return
+    fi
+    echo "Linking d3dcompiler_47.dll into '$sysDir' (required for ReShade 6.5+)."
+    [[ -L "$sysDir/d3dcompiler_47.dll" ]] && unlink "$sysDir/d3dcompiler_47.dll"
+    ln -is "$(realpath "$MAIN_PATH/d3dcompiler_47.dll.$arch")" "$sysDir/d3dcompiler_47.dll"
+}
+
 SEPARATOR="------------------------------------------------------------------------------------------------"
 COMMON_OVERRIDES="d3d8 d3d9 d3d11 ddraw dinput8 dxgi opengl32"
 REQUIRED_EXECUTABLES="7z curl git grep"
@@ -319,6 +352,7 @@ RESHADE_ADDON_SUPPORT=${RESHADE_ADDON_SUPPORT:-0}
 FORCE_RESHADE_UPDATE_CHECK=${FORCE_RESHADE_UPDATE_CHECK:-0}
 RESHADE_URL="https://reshade.me"
 RESHADE_URL_ALT="http://static.reshade.me"
+WINEPREFIX=${WINEPREFIX:-""}
 
 for REQUIRED_EXECUTABLE in $REQUIRED_EXECUTABLES; do
     if ! which "$REQUIRED_EXECUTABLE" &> /dev/null; then
@@ -407,6 +441,7 @@ if [[ -n $SHADER_REPOS ]]; then
             cd "$MAIN_PATH/ReShade_shaders" || exit
             branchArgs=()
             [[ -n $branchName ]] && branchArgs=(--branch "$branchName" --single-branch)
+            echo "Cloning ReShade shader repository $URI."
             git clone --depth 1 "${branchArgs[@]}" "$URI" "$localRepoName" || echo "Could not clone Shader repo: $URI."
         fi
         [[ $MERGE_SHADERS == 1 ]] && mergeShaderDirs "ReShade_shaders" "$localRepoName"
@@ -544,6 +579,14 @@ if [[ $(checkStdin "(i/u): " "^(i|u)$") == "u" ]]; then
         echo "Deleting ReShade.log and ReShadePreset.ini"
         rm -f "$gamePath/ReShade.log" "$gamePath/ReShadePreset.ini"
     fi
+    if [[ -n $WINEPREFIX ]]; then
+        for sysDir in "$WINEPREFIX/drive_c/windows/system32" "$WINEPREFIX/drive_c/windows/syswow64"; do
+            if [[ -L "$sysDir/d3dcompiler_47.dll" ]]; then
+                echo "Unlinking d3dcompiler_47.dll from '$sysDir'."
+                unlink "$sysDir/d3dcompiler_47.dll"
+            fi
+        done
+    fi
     echo "Finished uninstalling ReShade for '$gamePath'."
     echo -e "\e[40m\e[32mMake sure to remove or change the \e[34mWINEDLLOVERRIDES\e[32m environment variable.\e[0m"
     exit 0
@@ -583,6 +626,7 @@ fi
 
 # Z0040
 downloadD3dcompiler_47 "$exeArch"
+linkD3dcompilerToWineprefix "$exeArch"
 # Z0040
 
 # Z0045
@@ -617,3 +661,8 @@ echo -e "\e[32mIf not, run the game with this environment variable set: \e[34m$g
 echo -e "\e[32mThe next time you start the game, \e[34mopen the ReShade settings, go to the 'Settings' tab, if they are missing, add the Shaders folder" \
         "location to the 'Effect Search Paths', add the Textures folder to the 'Texture Search Paths'," \
         "these folders are located inside the ReShade_shaders folder, finally go to the 'Home' tab, click 'Reload'.\e[0m"
+if [[ -z $WINEPREFIX ]]; then
+    echo -e "\e[40m\e[33mNote: ReShade 6.5+ requires d3dcompiler_47.dll in the game's Wine/Proton prefix system32 folder,"
+    echo -e "not only in the game folder. If shaders fail to compile, re-run with WINEPREFIX set:"
+    echo -e "\e[34mWINEPREFIX=\"\$HOME/.local/share/Steam/steamapps/compatdata/<AppID>/pfx\" $0\e[0m"
+fi
