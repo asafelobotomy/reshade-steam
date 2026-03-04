@@ -57,9 +57,9 @@ cat > /dev/null <<DESCRIPTION
     Usage:
         Download the script
             Using curl:
-                curl -LO https://github.com/kevinlekiller/reshade-steam-proton/raw/main/reshade-linux.sh
+                curl -LO https://github.com/asafelobotomy/reshade-steam-proton/raw/main/reshade-linux.sh
             Using git:
-                git clone https://github.com/kevinlekiller/reshade-steam-proton
+                git clone https://github.com/asafelobotomy/reshade-steam-proton
                 cd reshade-steam-proton
         Make it executable:
             chmod u+x reshade-linux.sh
@@ -488,7 +488,7 @@ if [[ $FORCE_RESHADE_UPDATE_CHECK -eq 1 ]] || [[ $UPDATE_RESHADE -eq 1 ]] || [[ 
     if ! RHTML=$(curl --fail --max-time 10 -sL "$RESHADE_URL") || [[ $RHTML == *'<h2>Something went wrong.</h2>'* ]]; then
         ALT_URL=1
         echo "Error: Failed to connect to '$RESHADE_URL' after 10 seconds. Trying to connect to '$RESHADE_URL_ALT'."
-        RHTML=$(curl -sL "$RESHADE_URL_ALT") || echo "Error: Failed to connect to '$RESHADE_URL_ALT'."
+        RHTML=$(curl --fail -sL "$RESHADE_URL_ALT") || echo "Error: Failed to connect to '$RESHADE_URL_ALT'."
     fi
     [[ $RESHADE_ADDON_SUPPORT -eq 1 ]] && VREGEX="[0-9][0-9.]*[0-9]_Addon" || VREGEX="[0-9][0-9.]*[0-9]"
     RLINK="$(echo "$RHTML" | grep -o "/downloads/ReShade_Setup_${VREGEX}\.exe" | head -n1)"
@@ -538,7 +538,7 @@ fi
 
 # Z0025
 # TODO Requires changes for ReShade 5.0 ; paths and json files are different.
-# See https://github.com/kevinlekiller/reshade-steam-proton/issues/6#issuecomment-1027230967
+# See https://github.com/asafelobotomy/reshade-steam-proton/issues/6#issuecomment-1027230967
 if [[ $VULKAN_SUPPORT == 1 ]]; then
     echo "Does the game use the Vulkan API?"
     if [[ $(checkStdin "(y/n): " "^(y|n)$") == "y" ]]; then
