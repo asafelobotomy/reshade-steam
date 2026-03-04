@@ -251,14 +251,15 @@ function getGamePath() {
     echo '(Control+c to exit)'
     while true; do
         read -rp 'Game path: ' gamePath
-        eval gamePath="$gamePath" &> /dev/null
-        gamePath=$(realpath "$gamePath")
+        # Expand leading ~ without using eval (safe tilde expansion).
+        gamePath="${gamePath/#\~/$HOME}"
+        gamePath=$(realpath "$gamePath" 2>/dev/null)
         [[ -f $gamePath ]] && gamePath=$(dirname "$gamePath")
-        if ! ls "$gamePath" > /dev/null 2>&1 || [[ -z $gamePath ]]; then
+        if [[ -z $gamePath || ! -d $gamePath ]]; then
             echo "Incorrect or empty path supplied. You supplied \"$gamePath\"."
             continue
         fi
-        if ! ls "$gamePath/"*.exe > /dev/null 2>&1; then
+        if ! compgen -G "$gamePath/*.exe" &>/dev/null; then
             echo "No .exe file found in \"$gamePath\"."
             echo "Do you still want to use this directory?"
             [[ $(checkStdin "(y/n) " "^(y|n)$") != "y" ]] && continue
@@ -300,7 +301,7 @@ function downloadD3dcompiler_47() {
 # $2 -> Full URL of ReShade exe, ex.: https://reshade.me/downloads/ReShade_Setup_5.0.2.exe
 function downloadReshade() {
     createTempDir
-    curl -sLO "$2" || printErr "Could not download version $1 of ReShade."
+    curl --fail -sLO "$2" || printErr "Could not download version $1 of ReShade."
     exeFile="$(find . -name "*.exe")"
     ! [[ -f $exeFile ]] && printErr "Download of ReShade exe file failed."
     [[ $(file "$exeFile" | grep -o executable) == "" ]] && printErr "The ReShade exe file is not an executable file, does the ReShade version exist?"
@@ -337,11 +338,15 @@ function linkD3dcompilerToWineprefix() {
 
 SEPARATOR="------------------------------------------------------------------------------------------------"
 COMMON_OVERRIDES="d3d8 d3d9 d3d11 ddraw dinput8 dxgi opengl32"
-REQUIRED_EXECUTABLES="7z curl git grep"
+REQUIRED_EXECUTABLES=(7z curl git grep)
 XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
 MAIN_PATH=${MAIN_PATH:-"$XDG_DATA_HOME/reshade"}
 RESHADE_PATH="$MAIN_PATH/reshade"
-WINE_MAIN_PATH="$(echo "$MAIN_PATH" | sed "s#/home/$USER/##" | sed 's#/#\\\\#g')"
+# Strip the leading /home/$USER/ then convert forward slashes to double-backslashes
+# for use in Wine registry paths — done with pure bash, no external commands.
+_tmp_path="${MAIN_PATH#/home/"$USER"/}"
+WINE_MAIN_PATH="${_tmp_path//\//\\\\}"
+unset _tmp_path
 UPDATE_RESHADE=${UPDATE_RESHADE:-1}
 MERGE_SHADERS=${MERGE_SHADERS:-1}
 VULKAN_SUPPORT=${VULKAN_SUPPORT:-0}
@@ -354,9 +359,9 @@ RESHADE_URL="https://reshade.me"
 RESHADE_URL_ALT="http://static.reshade.me"
 WINEPREFIX=${WINEPREFIX:-""}
 
-for REQUIRED_EXECUTABLE in $REQUIRED_EXECUTABLES; do
-    if ! which "$REQUIRED_EXECUTABLE" &> /dev/null; then
-        echo -ne "Program '$REQUIRED_EXECUTABLE' is missing, but it is required.\nExiting.\n"
+for REQUIRED_EXECUTABLE in "${REQUIRED_EXECUTABLES[@]}"; do
+    if ! command -v "$REQUIRED_EXECUTABLE" &>/dev/null; then
+        printf "Program '%s' is missing, but it is required.\nExiting.\n" "$REQUIRED_EXECUTABLE"
         exit 1
     fi
 done
@@ -384,7 +389,7 @@ mkdir -p "$MAIN_PATH/External_shaders"
 
 # Z0005
 # Skip updating shaders / reshade if recently done (4 hours).
-[[ -f LASTUPDATED ]] && LASTUPDATED=$(cat LASTUPDATED) || LASTUPDATED=0
+LASTUPDATED=0; [[ -f LASTUPDATED ]] && LASTUPDATED=$(< LASTUPDATED)
 [[ ! $LASTUPDATED =~ ^[0-9]+$ ]] && LASTUPDATED=0
 [[ $LASTUPDATED -gt 0 && $(($(date +%s)-LASTUPDATED)) -lt 14400 ]] && UPDATE_RESHADE=0
 [[ $UPDATE_RESHADE == 1 ]] && date +%s > LASTUPDATED
@@ -427,10 +432,9 @@ if [[ -n $SHADER_REPOS ]]; then
     echo "Checking for ReShade Shader updates."
     [[ $REBUILD_MERGE == 1 ]] && rm -rf "$MAIN_PATH/ReShade_shaders/Merged/"
     [[ $MERGE_SHADERS == 1 ]] && mkdir -p "$MAIN_PATH/ReShade_shaders/Merged/Shaders" &&  mkdir -p "$MAIN_PATH/ReShade_shaders/Merged/Textures"
-    for URI in $(echo "$SHADER_REPOS" | tr ';' '\n'); do
-        localRepoName=$(echo "$URI" | cut -d'|' -f2)
-        branchName=$(echo "$URI" | cut -d'|' -f3)
-        URI=$(echo "$URI" | cut -d'|' -f1)
+    IFS=';' read -ra _shaderRepos <<< "$SHADER_REPOS"
+    for _repoEntry in "${_shaderRepos[@]}"; do
+        IFS='|' read -r URI localRepoName branchName <<< "$_repoEntry"
         if [[ -d "$MAIN_PATH/ReShade_shaders/$localRepoName" ]]; then
             if [[ $UPDATE_RESHADE -eq 1 ]]; then
                 cd "$MAIN_PATH/ReShade_shaders/$localRepoName" || continue
@@ -465,7 +469,7 @@ echo "$SEPARATOR"
 
 # Z0015
 cd "$MAIN_PATH" || exit
-[[ -f LVERS ]] && LVERS=$(cat LVERS) || LVERS=0
+LVERS=0; [[ -f LVERS ]] && LVERS=$(< LVERS)
 if [[ $RESHADE_VERSION == latest ]]; then
     # Check if user wants reshade without addon support and we're currently using reshade with addon support.
     [[ $LVERS =~ Addon && $RESHADE_ADDON_SUPPORT -eq 0 ]] && UPDATE_RESHADE=1
@@ -474,13 +478,11 @@ if [[ $RESHADE_VERSION == latest ]]; then
 fi
 if [[ $FORCE_RESHADE_UPDATE_CHECK -eq 1 ]] || [[ $UPDATE_RESHADE -eq 1 ]] || [[ ! -e reshade/latest/ReShade64.dll ]] || [[ ! -e reshade/latest/ReShade32.dll ]]; then
     echo -e "Checking for Reshade updates.\n$SEPARATOR"
-    RHTML=$(curl --max-time 10 -sL "$RESHADE_URL")
     ALT_URL=0
-    if [[ $? != 0 || $RHTML =~ '<h2>Something went wrong.</h2>' ]]; then
+    if ! RHTML=$(curl --fail --max-time 10 -sL "$RESHADE_URL") || [[ $RHTML == *'<h2>Something went wrong.</h2>'* ]]; then
         ALT_URL=1
         echo "Error: Failed to connect to '$RESHADE_URL' after 10 seconds. Trying to connect to '$RESHADE_URL_ALT'."
-        RHTML=$(curl -sL "$RESHADE_URL_ALT")
-        [[ $? != 0 ]] && echo "Error: Failed to connect to '$RESHADE_URL_ALT'."
+        RHTML=$(curl -sL "$RESHADE_URL_ALT") || echo "Error: Failed to connect to '$RESHADE_URL_ALT'."
     fi
     [[ $RESHADE_ADDON_SUPPORT -eq 1 ]] && VREGEX="[0-9][0-9.]*[0-9]_Addon" || VREGEX="[0-9][0-9.]*[0-9]"
     RLINK="$(echo "$RHTML" | grep -o "/downloads/ReShade_Setup_${VREGEX}\.exe" | head -n1)"
@@ -538,9 +540,10 @@ if [[ $VULKAN_SUPPORT == 1 ]]; then
         echo '(Control+c to exit)'
         while true; do
             read -rp 'WINEPREFIX path: ' WINEPREFIX
-            eval WINEPREFIX="$WINEPREFIX"
-            WINEPREFIX=$(realpath "$WINEPREFIX")
-            if ! ls "$WINEPREFIX" > /dev/null 2>&1 || [[ -z $WINEPREFIX ]]; then
+            # Expand leading ~ without using eval (safe tilde expansion).
+            WINEPREFIX="${WINEPREFIX/#\~/$HOME}"
+            WINEPREFIX=$(realpath "$WINEPREFIX" 2>/dev/null)
+            if [[ -z $WINEPREFIX || ! -d $WINEPREFIX ]]; then
                 echo "Incorrect or empty path supplied. You supplied \"$WINEPREFIX\"."
                 continue
             fi
@@ -552,11 +555,12 @@ if [[ $VULKAN_SUPPORT == 1 ]]; then
         export WINEPREFIX="$WINEPREFIX"
         echo "Do you want to (i)nstall or (u)ninstall ReShade?"
         if [[ $(checkStdin "(i/u): " "^(i|u)$") == "i" ]]; then
-            wine reg ADD HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers /d 0 /t REG_DWORD /v "Z:\\home\\$USER\\$WINE_MAIN_PATH\\reshade\\$RESHADE_VERSION\\ReShade$exeArch.json" -f /reg:"$exeArch"
+            wine reg ADD HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers /d 0 /t REG_DWORD /v "Z:\\home\\$USER\\$WINE_MAIN_PATH\\reshade\\$RESHADE_VERSION\\ReShade$exeArch.json" -f /reg:"$exeArch" \
+                && echo "Done." || echo "An error has occurred."
         else
-            wine reg DELETE HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers -f /reg:"$exeArch"
+            wine reg DELETE HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers -f /reg:"$exeArch" \
+                && echo "Done." || echo "An error has occurred."
         fi
-        [[ $? == 0 ]] && echo "Done." || echo "An error has occurred."
         exit 0
     fi
 fi
@@ -567,7 +571,9 @@ echo "Do you want to (i)nstall or (u)ninstall ReShade for a DirectX or OpenGL ga
 if [[ $(checkStdin "(i/u): " "^(i|u)$") == "u" ]]; then
     getGamePath
     echo "Unlinking ReShade files."
-    LINKS="$(echo "$COMMON_OVERRIDES" | sed 's/ /.dll /g' | sed 's/$/.dll/') ReShade.ini ReShade32.json ReShade64.json d3dcompiler_47.dll Shaders Textures ReShade_shaders"
+    # Build the DLL list from COMMON_OVERRIDES using bash string substitution
+    # (replaces each space with ".dll ", then appends ".dll" to the last entry).
+    LINKS="${COMMON_OVERRIDES// /.dll }.dll ReShade.ini ReShade32.json ReShade64.json d3dcompiler_47.dll Shaders Textures ReShade_shaders"
     [[ -n $LINK_PRESET ]] && LINKS="$LINKS $LINK_PRESET"
     for link in $LINKS; do
         if [[ -L $gamePath/$link ]]; then
