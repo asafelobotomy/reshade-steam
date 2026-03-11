@@ -229,6 +229,12 @@ cat > /dev/null <<DESCRIPTION
             ~/.local/share/Steam/steamapps/compatdata/<AppID>/pfx
             You can find your game's AppID on https://steamdb.info
             ex.: WINEPREFIX="$HOME/.local/share/Steam/steamapps/compatdata/12345/pfx" ./reshade-linux.sh
+
+        GAME_DIR_PRESETS
+            Optional app-specific install-directory overrides used by Steam auto-detection.
+            Format: AppID|subdirectory;AppID2|subdirectory2
+            ex.: GAME_DIR_PRESETS="12345|Binaries/Win64;67890|bin/x64" ./reshade-linux.sh
+            If a preset matches, that subdirectory is used instead of built-in presets and generic heuristics.
 DESCRIPTION
 
 # Print error and exit
@@ -282,8 +288,619 @@ function withProgress() {
     fi
 }
 
-# Try to get game directory from user.
-function getGamePath() {
+# Return all detected Steam library steamapps directories (one per line).
+function listSteamAppsDirs() {
+    local _root _vdf _libPath _key
+    local -A _seen=()
+    for _root in \
+        "$XDG_DATA_HOME/Steam" \
+        "$HOME/.local/share/Steam" \
+        "$HOME/.steam/steam" \
+        "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam"; do
+        [[ -d "$_root/steamapps" ]] || continue
+        # Canonicalize the path so that symlinks (e.g. /home -> /var/home) are
+        # treated as the same directory and not enumerated twice.
+        _key=$(realpath "$_root/steamapps" 2>/dev/null || printf '%s' "$_root/steamapps")
+        if [[ -z ${_seen["$_key"]+x} ]]; then
+            printf '%s\n' "$_root/steamapps"
+            _seen["$_key"]=1
+        fi
+        _vdf="$_root/steamapps/libraryfolders.vdf"
+        [[ -f $_vdf ]] || continue
+        while IFS= read -r _libPath; do
+            _libPath=${_libPath//\\\\/\\}
+            [[ -d "$_libPath/steamapps" ]] || continue
+            _key=$(realpath "$_libPath/steamapps" 2>/dev/null || printf '%s' "$_libPath/steamapps")
+            if [[ -z ${_seen["$_key"]+x} ]]; then
+                printf '%s\n' "$_libPath/steamapps"
+                _seen["$_key"]=1
+            fi
+        done < <(sed -n 's/.*"path"[[:space:]]*"\([^"]*\)".*/\1/p' "$_vdf")
+    done
+}
+
+# Find a locally cached Steam icon for an AppID.
+# Checks appcache/librarycache in each known Steam root; prints path or empty string.
+function findSteamIconPath() {
+    local _steamRoot="$1" _appId="$2" _root _dir _f _c
+    local _cacheDir="${XDG_CACHE_HOME:-$HOME/.cache}/reshade-linux/icons"
+
+    # Backward compatibility: accept legacy call order (appId, steamRoot).
+    if [[ $_steamRoot =~ ^[0-9]+$ ]] && [[ -n $_appId && $_appId == /* ]]; then
+        local _tmp="$_steamRoot"
+        _steamRoot="$_appId"
+        _appId="$_tmp"
+    fi
+
+    # 1. Check persistent download cache (from previous CDN fetches).
+    for _c in "$_cacheDir/${_appId}.png" "$_cacheDir/${_appId}.jpg"; do
+        [[ -f $_c ]] && { printf '%s\n' "$_c"; return; }
+    done
+
+    # 2. Check provided Steam root first (for external libraries), if specified.
+    if [[ -n $_steamRoot && -d $_steamRoot ]]; then
+        _dir="$_steamRoot/appcache/librarycache/${_appId}"
+        if [[ -d $_dir ]]; then
+            # Prefer logo.png (game logo with transparent background).
+            [[ -f "$_dir/logo.png" ]] && { printf '%s\n' "$_dir/logo.png"; return; }
+            # Then pick the small hash-named .jpg (32x32 game icon stored by Steam).
+            for _f in "$_dir"/*.jpg; do
+                [[ -f $_f ]] || continue
+                case $(basename "$_f") in header.jpg|library_*.jpg) continue ;; esac
+                printf '%s\n' "$_f"; return
+            done
+            # Fall back to banner header.
+            [[ -f "$_dir/header.jpg" ]] && { printf '%s\n' "$_dir/header.jpg"; return; }
+        fi
+    fi
+
+    # 3. Check local Steam client image cache (standard locations).
+    for _root in \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/Steam" \
+        "$HOME/.local/share/Steam" \
+        "$HOME/.steam/steam" \
+        "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam"; do
+        _dir="$_root/appcache/librarycache/${_appId}"
+        [[ -d $_dir ]] || continue
+        # Prefer logo.png (game logo with transparent background).
+        [[ -f "$_dir/logo.png" ]] && { printf '%s\n' "$_dir/logo.png"; return; }
+        # Then pick the small hash-named .jpg (32x32 game icon stored by Steam).
+        for _f in "$_dir"/*.jpg; do
+            [[ -f $_f ]] || continue
+            case $(basename "$_f") in header.jpg|library_*.jpg) continue ;; esac
+            printf '%s\n' "$_f"; return
+        done
+        # Fall back to banner header.
+        [[ -f "$_dir/header.jpg" ]] && { printf '%s\n' "$_dir/header.jpg"; return; }
+    done
+}
+
+# Return preset subdirectory for an AppID from BUILTIN_GAME_DIR_PRESETS.
+function getBuiltInGameDirPreset() {
+    local _appId="$1" _entry _k _v
+    local IFS=';'
+    for _entry in $BUILTIN_GAME_DIR_PRESETS; do
+        _k=${_entry%%|*}
+        _v=${_entry#*|}
+        [[ $_k == "$_appId" ]] && { printf '%s\n' "$_v"; return; }
+    done
+}
+
+# Pick the most likely game executable from a directory.
+# ReShade requires the ACTUAL game executable for DLL injection (via WINEDLLOVERRIDES).
+# Filters out utilities (crash handlers, installers, etc.) and scores by name similarity to parent folder.
+# Prints basename (or empty string if none found).
+function pickBestExeInDir() {
+    local _dir="$1" _parentDir _exe _name _lname _score _best _bestScore=-999999 _isUtility
+    local _exeList=()
+    
+    _parentDir=$(basename "$_dir" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')
+    
+    # Collect all .exe files and score them.
+    for _exe in "$_dir"/*.exe; do
+        [[ -f $_exe ]] || continue
+        _name=${_exe##*/}
+        _lname=${_name,,}
+        _score=50
+        _isUtility=0
+        
+        # Aggressive blacklist: filter OUT known non-game executables.
+        if [[ $_lname =~ (unityplayer|unitycrash|crashhandler|easyanticheat|battleye|asp|unins|uninstall|setup|installer|vcredist|redist|eac|crashreport|crashpad|benchmark|test|launcher|update|check|remov|error|consultant) ]]; then
+            _isUtility=1
+            _score=$((_score - 200))
+        fi
+        # Mono runtime bundled with some Linux games — not a game executable.
+        [[ $_lname =~ ^mono\. ]] && { _isUtility=1; _score=$((_score - 200)); }
+        
+        # Moderate penalty: debug builds are rarely the correct launch target.
+        [[ $_lname =~ debug ]] && _score=$((_score - 80))
+        
+        # Strong positive: name contains parent directory name.
+        [[ "$_lname" == *"${_parentDir}"* ]] && _score=$((_score + 150))
+        
+        # Moderate positive: contains game-like keywords.
+        [[ $_lname =~ (game|main|app|engine|client|server|game_?setup) ]] && _score=$((_score + 80))
+        
+        # Moderate positive: contains architecture keywords (games tend to match their arch).
+        [[ $_lname =~ (win64|x64|win32|i386|64|x86|ia32) ]] && _score=$((_score + 40))
+        
+        # Small penalty: generic names that could be utilities.
+        [[ $_lname =~ ^[a-z][a-z0-9]?$ || $_lname == "app.exe" ]] && _score=$((_score - 30))
+        
+        if [[ $_score -gt $_bestScore ]]; then
+            _bestScore=$_score
+            _best=$_name
+        fi
+    done
+    
+    # Don't return an exe that scored as a utility/debug — skip entry entirely.
+    [[ $_bestScore -le 0 ]] && _best=""
+    printf '%s\n' "$_best"
+}
+
+# Score a specific executable candidate for a directory using the same heuristics
+# as pickBestExeInDir(). Higher score means a more likely real game executable.
+function scoreExeCandidate() {
+    local _dir="$1" _name="$2" _lname _parentDir _score=50
+    [[ -z $_name ]] && { printf '%s\n' "-999999"; return; }
+    _lname=${_name,,}
+    _parentDir=$(basename "$_dir" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')
+
+    [[ $_lname =~ (unityplayer|unitycrash|crashhandler|easyanticheat|battleye|asp|unins|uninstall|setup|installer|vcredist|redist|eac|crashreport|crashpad|benchmark|test|launcher|update|check|remov|error|consultant) ]] && _score=$((_score - 200))
+    [[ $_lname =~ ^mono\. ]] && _score=$((_score - 200))
+    [[ $_lname =~ debug ]] && _score=$((_score - 80))
+    [[ "$_lname" == *"${_parentDir}"* ]] && _score=$((_score + 150))
+    [[ $_lname =~ (game|main|app|engine|client|server|game_?setup) ]] && _score=$((_score + 80))
+    [[ $_lname =~ (win64|x64|win32|i386|64|x86|ia32) ]] && _score=$((_score + 40))
+    [[ $_lname =~ ^[a-z][a-z0-9]?$ || $_lname == "app.exe" ]] && _score=$((_score - 30))
+
+    printf '%s\n' "$_score"
+}
+
+# Resolve the preferred install directory for a Steam game root.
+# Prints "<directory>|<reason>".
+function resolveGameInstallDir() {
+    local _root="$1" _appId="$2"
+    local _preset _entry _k _v _candidate _exe _depth _score _best _bestScore=-999999
+
+    # Optional presets: GAME_DIR_PRESETS="12345|Binaries/Win64;67890|bin/x64"
+    if [[ -n ${GAME_DIR_PRESETS:-} ]]; then
+        local IFS=';'
+        for _entry in $GAME_DIR_PRESETS; do
+            _k=${_entry%%|*}
+            _v=${_entry#*|}
+            if [[ $_k == "$_appId" ]] && [[ -n $_v ]] && [[ -d "$_root/$_v" ]]; then
+                printf '%s|%s\n' "$_root/$_v" "preset:$_v"
+                return
+            fi
+        done
+    fi
+
+    # Built-in presets for known games with non-root launch directories.
+    _preset=$(getBuiltInGameDirPreset "$_appId")
+    if [[ -n $_preset ]] && [[ -d "$_root/$_preset" ]]; then
+        printf '%s|%s\n' "$_root/$_preset" "builtin:$_preset"
+        return
+    fi
+
+    for _candidate in \
+        "." \
+        "Binaries/Win64" "Binaries/Win32" "Binaries" \
+        "bin/x64" "bin/x86" "bin" \
+        "Win64" "Win32" "x64" "x86"; do
+        if [[ $_candidate == "." ]]; then
+            _candidate="$_root"
+        else
+            _candidate="$_root/$_candidate"
+        fi
+        if [[ -d $_candidate ]] && compgen -G "$_candidate/*.exe" &>/dev/null; then
+            printf '%s|%s\n' "$_candidate" "heuristic"
+            return
+        fi
+    done
+
+    # Generic fallback: scan exe files and score likely launch targets.
+    while IFS='|' read -r _depth _exe; do
+        [[ -n $_exe ]] || continue
+        _score=$((200 - _depth * 12))
+        _name=${_exe##*/}
+        _name=${_name,,}
+        [[ $_name =~ (unins|uninstall|setup|installer|vcredist|redist|eac|easyanticheat|crashreport|crashpad|benchmark|remov|error|consultant) ]] && _score=$((_score - 100))
+        [[ $_name =~ ^mono\. ]] && _score=$((_score - 100))
+        [[ $_name =~ debug ]] && _score=$((_score - 50))
+        # Penalize executables buried inside Mono/Unity runtime directories.
+        [[ $_exe == */Mono/lib/* || $_exe == */Mono/bin/* || $_exe == */MonoBleedingEdge/* ]] && _score=$((_score - 300))
+        [[ $_name =~ (shipping|game|win64|x64) ]] && _score=$((_score + 15))
+        if [[ $_score -gt $_bestScore ]]; then
+            _bestScore=$_score
+            _best=$(dirname "$_exe")
+        fi
+    done < <(find "$_root" -maxdepth 5 -type f -iname '*.exe' -printf '%d|%p\n' 2>/dev/null)
+
+    # Only use the scan result if it has a plausible game executable.
+    if [[ -n $_best && $_bestScore -ge 0 ]]; then
+        printf '%s|%s\n' "$_best" "scan"
+    else
+        printf '%s|%s\n' "$_root" "root"
+    fi
+}
+
+# Find Steam's binary appinfo.vdf, which contains authoritative launch exe data for
+# every game Steam knows about (installed or not). Returns the path or nothing.
+function findSteamAppinfoVdf() {
+    local _r
+    for _r in \
+        "${XDG_DATA_HOME:-$HOME/.local/share}/Steam" \
+        "$HOME/.local/share/Steam" \
+        "$HOME/.steam/steam" \
+        "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam"; do
+        [[ -f "$_r/appcache/appinfo.vdf" ]] && { printf '%s\n' "$_r/appcache/appinfo.vdf"; return; }
+    done
+}
+
+# Parse Steam's binary appinfo.vdf once and emit one line per game:
+#   <appid>:<exe1>|<exe2>|...
+# where exeN are unique Windows .exe paths from the launch config (in Steam's order).
+# Uses only Python3 stdlib (struct). Silently exits on any error or unsupported format.
+function loadSteamAppinfoExes() {
+    local _appinfo="$1"
+    [[ -f $_appinfo ]] || return
+    command -v python3 &>/dev/null || return
+    python3 - "$_appinfo" 2>/dev/null <<'PYEOF'
+import sys, struct
+try:
+    with open(sys.argv[1], 'rb') as fh:
+        raw = fh.read()
+except OSError:
+    sys.exit(0)
+
+magic = raw[:4]
+# bytes 1-3 must be b'DV\x07'; byte 0 is the format variant (0x27, 0x28, or 0x29)
+if len(raw) < 8 or magic[1:4] != b'DV\x07':
+    sys.exit(0)
+
+# File header: 8 bytes for 0x27/0x28, 16 bytes for 0x29+
+pos     = 8 if magic[0] < 0x29 else 16
+new_sha = magic[0] >= 0x28   # 0x28 and 0x29 add a data_sha1 field per record
+
+# In the per-app binary VDF, launch executables are stored with uint32 integer
+# keys (NOT null-terminated string keys like public VDF). The pattern:
+#   T_STRING (0x01) + uint32-LE key 457 (0x01C9) == "executable"
+EXEC_PAT = b'\x01\xc9\x01\x00\x00'
+# Metadata bytes to skip at the start of each app record before the binary VDF:
+#   info_state(4) + last_updated(4) + access_token(8) + sha1(20) + change_number(4)
+#   + data_sha1(20 if new_sha)
+META_SZ = 4 + 4 + 8 + 20 + 4 + (20 if new_sha else 0)
+
+while pos + 8 <= len(raw):
+    appid = struct.unpack_from('<I', raw, pos)[0]; pos += 4
+    if appid == 0:
+        break
+    sz  = struct.unpack_from('<I', raw, pos)[0]; pos += 4
+    end = pos + sz
+    chunk = raw[pos + META_SZ : end]
+    pos   = end
+
+    seen, results = set(), []
+    p = 0
+    while len(results) < 8:
+        i = chunk.find(EXEC_PAT, p)
+        if i == -1:
+            break
+        s = i + len(EXEC_PAT)
+        e = chunk.find(b'\x00', s)
+        if e == -1:
+            break
+        exe = chunk[s:e].decode('utf-8', 'replace').replace('\\\\', '/').replace('\\', '/')
+        if exe.lower().endswith('.exe'):
+            key = exe.lower()
+            if key not in seen:
+                seen.add(key)
+                # Sanitize: replace '|' (our delimiter) with '/'
+                results.append(exe.replace('|', '/'))
+        p = i + 1
+
+    if results:
+        print(f"{appid}:{'|'.join(results)}")
+PYEOF
+}
+
+# Detect the architecture and best ReShade DLL hook for a game directory by
+# parsing the PE import table of root-level .exe files (Python3 stdlib only).
+# $1 = game directory to scan
+# Outputs two lines on success: "arch=64" and "dll=dxgi" (values vary per game).
+function detectExeInfo() {
+    local _dir="$1"
+    command -v python3 &>/dev/null || return 1
+    python3 - "$_dir" 2>/dev/null <<'PYEOF'
+import sys, struct, os, re
+BLACKLIST = re.compile(
+    r'crash|setup|uninst|install|redist|vcredist|dxsetup|vc_redist|dotnet|error|remov', re.I)
+PRIORITY  = ['d3d12.dll','d3d11.dll','d3d10.dll','d3d9.dll','d3d8.dll',
+             'opengl32.dll','ddraw.dll','dinput8.dll']
+OVERRIDE  = {'d3d12.dll':'dxgi','d3d11.dll':'dxgi','d3d10.dll':'dxgi',
+             'd3d9.dll':'d3d9','d3d8.dll':'d3d8',
+             'opengl32.dll':'opengl32','ddraw.dll':'ddraw','dinput8.dll':'dinput8'}
+
+def parse_pe(path):
+    try:
+        with open(path, 'rb') as f:
+            data = f.read(min(os.path.getsize(path), 2 * 1024 * 1024))
+    except OSError:
+        return None, []
+    if data[:2] != b'MZ':
+        return None, []
+    e_lfanew = struct.unpack_from('<I', data, 60)[0]
+    if e_lfanew + 24 > len(data) or data[e_lfanew:e_lfanew+4] != b'PE\x00\x00':
+        return None, []
+    num_sec   = struct.unpack_from('<H', data, e_lfanew + 6)[0]
+    opt_sz    = struct.unpack_from('<H', data, e_lfanew + 20)[0]
+    opt_off   = e_lfanew + 24
+    if opt_off + 2 > len(data):
+        return None, []
+    opt_magic = struct.unpack_from('<H', data, opt_off)[0]
+    is64  = (opt_magic == 0x20b)
+    arch  = 64 if is64 else 32
+    # DataDirectory[1] (Import): PE32 = opt_off+104, PE32+ = opt_off+120
+    imp_rva_off = opt_off + (120 if is64 else 104)
+    if imp_rva_off + 4 > len(data):
+        return arch, []
+    imp_rva = struct.unpack_from('<I', data, imp_rva_off)[0]
+    if imp_rva == 0:
+        return arch, []
+    sec_off  = opt_off + opt_sz
+    sections = []
+    for i in range(num_sec):
+        s = sec_off + i * 40
+        if s + 40 > len(data):
+            break
+        va  = struct.unpack_from('<I', data, s + 12)[0]
+        vsz = struct.unpack_from('<I', data, s + 16)[0]
+        raw = struct.unpack_from('<I', data, s + 20)[0]
+        sections.append((va, vsz, raw))
+    def rva2off(rva):
+        for va, vsz, raw in sections:
+            if va <= rva < va + vsz:
+                return raw + (rva - va)
+        return None
+    imp_off = rva2off(imp_rva)
+    if imp_off is None:
+        return arch, []
+    imports = []
+    idx = 0
+    while True:
+        d = imp_off + idx * 20
+        if d + 20 > len(data):
+            break
+        name_rva = struct.unpack_from('<I', data, d + 12)[0]
+        if name_rva == 0:
+            break
+        no  = rva2off(name_rva)
+        if no is None:
+            break
+        end = data.find(b'\x00', no)
+        if end < 0:
+            break
+        imports.append(data[no:end].decode('ascii', 'replace').lower())
+        idx += 1
+    return arch, imports
+
+game_dir = sys.argv[1] if len(sys.argv) > 1 else '.'
+try:
+    exes = [f for f in os.listdir(game_dir)
+            if f.lower().endswith('.exe') and not BLACKLIST.search(f)]
+except OSError:
+    sys.exit(1)
+
+arch_votes = {32: 0, 64: 0}
+dll_votes  = {}
+for exe in exes:
+    arch, imports = parse_pe(os.path.join(game_dir, exe))
+    if arch:
+        arch_votes[arch] += 1
+    for imp in imports:
+        if imp in OVERRIDE:
+            dll_votes[imp] = dll_votes.get(imp, 0) + 1
+
+final_arch = 64 if arch_votes[64] >= arch_votes[32] else 32
+best_dll   = next((OVERRIDE[p] for p in PRIORITY if p in dll_votes), None)
+if best_dll is None:
+    best_dll = 'dxgi' if final_arch == 64 else 'd3d9'
+print(f"arch={final_arch}")
+print(f"dll={best_dll}")
+PYEOF
+}
+
+# Write a per-game state file recording installation details.
+# $1=appId  $2=gamePath  $3=dll  $4=arch
+# State files live in $MAIN_PATH/game-state/<appid>.state
+function writeGameState() {
+    local _aid="$1" _gp="$2" _dll="$3" _arch="$4"
+    [[ -z $_aid ]] && return
+    local _dir="$MAIN_PATH/game-state"
+    mkdir -p "$_dir" 2>/dev/null || return
+    printf 'dll=%s\narch=%s\ngamePath=%s\n' "$_dll" "$_arch" "$_gp" > "$_dir/$_aid.state"
+}
+
+# Write/replace the Steam launch option for a game in localconfig.vdf.
+# $1=appId  $2=full launch option string  (e.g. 'WINEDLLOVERRIDES="..." %command%')
+# Backs up the file before any modification.
+function applyLaunchOption() {
+    local _aid="$1" _opt="$2"
+    [[ -z $_aid || -z $_opt ]] && return 1
+    command -v python3 &>/dev/null || return 1
+    local _vcfg _applied=0
+    for _vcfg in \
+        "$HOME/.local/share/Steam/userdata"/*/config/localconfig.vdf \
+        "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam/userdata"/*/config/localconfig.vdf; do
+        [[ -f $_vcfg ]] || continue
+        python3 - "$_vcfg" "$_aid" "$_opt" 2>/dev/null <<'PYEOF'
+import sys, re, os, shutil
+vdf_path, appid, launch_opt = sys.argv[1], sys.argv[2], sys.argv[3]
+
+with open(vdf_path, encoding='utf-8', errors='replace') as f:
+    text = f.read()
+
+# Locate "apps" section then find the <appid> block within it using brace counting.
+apps_m = re.search(r'"[Aa]pps"\s*\{', text)
+if not apps_m:
+    sys.exit(1)
+appid_m = re.search(rf'"{ re.escape(appid) }"\s*\{{', text[apps_m.end():])
+if not appid_m:
+    sys.exit(1)
+
+block_start = apps_m.end() + appid_m.end()
+depth = 1
+block_end = block_start
+for pos, ch in enumerate(text[block_start:]):
+    if ch == '{': depth += 1
+    elif ch == '}':
+        depth -= 1
+        if depth == 0:
+            block_end = block_start + pos
+            break
+else:
+    sys.exit(1)
+
+block    = text[block_start:block_end]
+lo_re    = re.compile(r'"LaunchOptions"(\s+)"[^"]*"', re.I)
+lo_repl  = f'"LaunchOptions"\t\t"{launch_opt}"'
+if lo_re.search(block):
+    new_block = lo_re.sub(lo_repl, block, count=1)
+else:
+    indent    = (re.search(r'\n(\s+)"', block) or re.match(r'()', '')).group(1) if re.search(r'\n(\s+)"', block) else '\t' * 8
+    new_block = block.rstrip() + f'\n{indent}{lo_repl}\n'
+
+new_text = text[:block_start] + new_block + text[block_end:]
+shutil.copy2(vdf_path, vdf_path + '.reshade.bak')
+with open(vdf_path, 'w', encoding='utf-8') as f:
+    f.write(new_text)
+print(f"Updated {vdf_path}")
+PYEOF
+        if [[ $? -eq 0 ]]; then
+            _applied=1
+        fi
+    done
+    return $(( 1 - _applied ))
+}
+
+# Fill auto-detected Steam game arrays.
+function detectSteamGames() {
+    DETECTED_GAME_NAMES=()
+    DETECTED_GAME_APPIDS=()
+    DETECTED_GAME_PATHS=()
+    DETECTED_GAME_EXES=()
+    DETECTED_GAME_ICONS=()
+    DETECTED_GAME_REASONS=()
+    local _steamapps _manifest _appId _name _installDir _type _root _resolved _path _reason _exe _icon _steamRoot _dedupeKey
+    local _idx _oldIdx _newScore _oldScore _aiCand
+    local -a _aiCands
+    local -A _bestIdxByPath=()
+
+    # Parse Steam's appinfo.vdf once — authoritative Windows launch exe for every game.
+    local -A _appinfoExes=()
+    local _appinfoFile
+    _appinfoFile=$(findSteamAppinfoVdf)
+    if [[ -n $_appinfoFile ]]; then
+        while IFS=: read -r _aid _aexes; do
+            [[ -n $_aid && -n $_aexes ]] && _appinfoExes["$_aid"]="$_aexes"
+        done < <(loadSteamAppinfoExes "$_appinfoFile")
+    fi
+
+    while IFS= read -r _steamapps; do
+        [[ -d $_steamapps ]] || continue
+        # Extract Steam root: /path/to/steamapps -> /path/to
+        _steamRoot="${_steamapps%/steamapps}"
+        [[ -d $_steamRoot ]] || continue
+        
+        for _manifest in "$_steamapps"/appmanifest_*.acf; do
+            [[ -f $_manifest ]] || continue
+            _appId=$(grep -m1 -o '"appid"[[:space:]]*"[0-9]*"' "$_manifest" | grep -o '[0-9]*')
+            _name=$(grep -m1 -o '"name"[[:space:]]*"[^"]*"' "$_manifest" | sed -E 's/.*"name"[[:space:]]*"([^"]*)".*/\1/')
+            _installDir=$(grep -m1 -o '"installdir"[[:space:]]*"[^"]*"' "$_manifest" | sed -E 's/.*"installdir"[[:space:]]*"([^"]*)".*/\1/')
+            _type=$(grep -m1 -o '"type"[[:space:]]*"[^"]*"' "$_manifest" | sed -E 's/.*"type"[[:space:]]*"([^"]*)".*/\1/' | tr '[:upper:]' '[:lower:]')
+
+            # Normalize common ACF parsing artifacts (CRLF + surrounding spaces).
+            _appId=${_appId//$'\r'/}
+            _name=${_name//$'\r'/}
+            _installDir=${_installDir//$'\r'/}
+            _type=${_type//$'\r'/}
+            _name="${_name#"${_name%%[![:space:]]*}"}"; _name="${_name%"${_name##*[![:space:]]}"}"
+            _installDir="${_installDir#"${_installDir%%[![:space:]]*}"}"; _installDir="${_installDir%"${_installDir##*[![:space:]]}"}"
+            _type="${_type#"${_type%%[![:space:]]*}"}"; _type="${_type%"${_type##*[![:space:]]}"}"
+
+            [[ -n $_appId && -n $_installDir ]] || continue
+            # Skip non-game entries: Proton builds, Steam runtimes, redistributables, etc.
+            [[ -n $_type && $_type != "game" ]] && continue
+            [[ $_name =~ ^Proton([[:space:]]|$) || $_name =~ ^Steam[[:space:]]Linux[[:space:]]Runtime || $_name == "Steamworks Common Redistributables" ]] && continue
+            _root="$_steamapps/common/$_installDir"
+            [[ -d $_root ]] || continue
+            _resolved=$(resolveGameInstallDir "$_root" "$_appId")
+            _path=${_resolved%%|*}
+            _reason=${_resolved#*|}
+            _exe=""
+
+            # If no manually-curated preset matched, try Steam's appinfo.vdf for the
+            # authoritative Windows launch executable. appinfo.vdf is Steam's own binary
+            # database — it knows exactly which .exe Steam uses to start each game.
+            # Presets (builtin/user) take priority because they point to the ReShade-
+            # compatible exe, which may differ from the outer launcher Steam invokes.
+            if [[ $_reason != preset:* && $_reason != builtin:* && -n ${_appinfoExes[$_appId]+x} ]]; then
+                IFS='|' read -ra _aiCands <<< "${_appinfoExes[$_appId]}"
+                for _aiCand in "${_aiCands[@]}"; do
+                    if [[ -f "$_root/$_aiCand" ]]; then
+                        _path=$(dirname "$_root/$_aiCand")
+                        _exe=$(basename "$_aiCand")
+                        _reason="appinfo"
+                        break
+                    fi
+                done
+            fi
+
+            # Fall back to heuristic exe scoring if appinfo didn't resolve a valid on-disk exe.
+            [[ -z $_exe ]] && _exe=$(pickBestExeInDir "$_path")
+
+            # Canonicalize path for stable dedupe across symlinks/trailing slashes/case variants.
+            _path=$(realpath "$_path" 2>/dev/null || printf '%s' "$_path")
+            _path=${_path%/}
+            _dedupeKey=${_path,,}
+
+            [[ -d $_path ]] || continue
+            [[ -z $_name ]] && _name="AppID $_appId"
+            # ReShade only works with a Windows executable target; hide unusable auto-detections.
+            [[ -z $_exe ]] && continue
+            _icon=$(findSteamIconPath "$_steamRoot" "$_appId" 2>/dev/null || echo "")
+
+            # Deduplicate by canonical install path and keep the best exe candidate.
+            if [[ -n ${_bestIdxByPath["$_dedupeKey"]+x} ]]; then
+                _oldIdx=${_bestIdxByPath["$_dedupeKey"]}
+                _newScore=$(scoreExeCandidate "$_path" "$_exe")
+                _oldScore=$(scoreExeCandidate "$_path" "${DETECTED_GAME_EXES[_oldIdx]}")
+                if (( _newScore > _oldScore )); then
+                    DETECTED_GAME_NAMES[_oldIdx]="$_name"
+                    DETECTED_GAME_APPIDS[_oldIdx]="$_appId"
+                    DETECTED_GAME_PATHS[_oldIdx]="$_path"
+                    DETECTED_GAME_EXES[_oldIdx]="$_exe"
+                    DETECTED_GAME_ICONS[_oldIdx]="$_icon"
+                    DETECTED_GAME_REASONS[_oldIdx]="$_reason"
+                fi
+                continue
+            fi
+
+            DETECTED_GAME_NAMES+=("$_name")
+            DETECTED_GAME_APPIDS+=("$_appId")
+            DETECTED_GAME_PATHS+=("$_path")
+            DETECTED_GAME_EXES+=("$_exe")
+            DETECTED_GAME_ICONS+=("$_icon")
+            DETECTED_GAME_REASONS+=("$_reason")
+            _idx=$((${#DETECTED_GAME_PATHS[@]} - 1))
+            _bestIdxByPath["$_dedupeKey"]=$_idx
+        done
+    done < <(listSteamAppsDirs)
+}
+
+# Prompt user for a game path manually (GUI or CLI).
+function promptGamePathManual() {
     if [[ $_GUI -eq 1 ]]; then
         local _startDir="$HOME/.local/share/Steam/steamapps/common"
         [[ ! -d $_startDir ]] && _startDir="$HOME"
@@ -315,12 +932,10 @@ function getGamePath() {
         done
         return
     fi
-    # --- CLI path ---
     printf '%bSupply the folder path where the main executable (.exe) for the game is.%b\n' "$_CYN" "$_R"
     printf '%b(Control+C to exit)%b\n' "$_YLW" "$_R"
     while true; do
         read -rp "$(printf '%bGame path: %b' "$_YLW" "$_R")" gamePath
-        # Expand leading ~ without using eval (safe tilde expansion).
         gamePath="${gamePath/#\~/$HOME}"
         gamePath=$(realpath "$gamePath" 2>/dev/null)
         [[ -f $gamePath ]] && gamePath=$(dirname "$gamePath")
@@ -335,6 +950,110 @@ function getGamePath() {
         fi
         echo "Is this path correct? \"$gamePath\""
         [[ $(checkStdin "(y/n) " "^(y|n)$") == "y" ]] && break
+    done
+}
+
+# Try to get game directory from user, preferring auto-detected Steam games.
+function getGamePath() {
+    detectSteamGames
+    if [[ ${#DETECTED_GAME_PATHS[@]} -eq 0 ]]; then
+        promptGamePathManual
+        return
+    fi
+
+    if [[ $_GUI -eq 1 ]]; then
+        local _pick _i _iconTmpDir="" _scaledIcon _statusName
+        local _cacheDir="${XDG_CACHE_HOME:-$HOME/.cache}/reshade-linux/icons"
+        mkdir -p "$_cacheDir" 2>/dev/null
+
+        # Download missing icons from the Steam CDN in parallel (cached for future runs).
+        for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
+            [[ -n ${DETECTED_GAME_ICONS[_i]} ]] && continue
+            curl --silent --fail --max-time 8 \
+                -o "$_cacheDir/${DETECTED_GAME_APPIDS[_i]}.jpg" \
+                "https://cdn.steamstatic.com/steam/apps/${DETECTED_GAME_APPIDS[_i]}/header.jpg" \
+                2>/dev/null &
+        done
+        wait
+        # Fill in paths for games that now have a freshly downloaded icon.
+        for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
+            [[ -n ${DETECTED_GAME_ICONS[_i]} ]] && continue
+            local _f="$_cacheDir/${DETECTED_GAME_APPIDS[_i]}.jpg"
+            [[ -f $_f ]] && DETECTED_GAME_ICONS[_i]="$_f"
+        done
+
+        # Pre-scale icons to 48x48 so they don't fill entire rows in the list.
+        if command -v magick &>/dev/null; then
+            _iconTmpDir=$(mktemp -d)
+        fi
+        local _args=(
+            --list --no-click
+            --title "ReShade — Select Game"
+            --text "Detected installed Steam games. Choose one, or select manual path. ✔ = ReShade already installed."
+            --column "Icon:IMG" --column "Game" --column "AppID" --column "Executable" --column "Install directory" --column "Detected by"
+            --print-column=5 --search-column=2 --separator ""
+            --width=1100 --height=560
+        )
+        for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
+            _scaledIcon="${DETECTED_GAME_ICONS[_i]}"
+            if [[ -n $_iconTmpDir && -n $_scaledIcon ]]; then
+                magick "$_scaledIcon" -resize 48x48\> "$_iconTmpDir/$_i.png" 2>/dev/null \
+                    && _scaledIcon="$_iconTmpDir/$_i.png"
+            fi
+            _statusName="${DETECTED_GAME_NAMES[_i]}"
+            [[ -f "$MAIN_PATH/game-state/${DETECTED_GAME_APPIDS[_i]}.state" ]] \
+                && _statusName="✔ $_statusName"
+            _args+=("$_scaledIcon" "$_statusName" "${DETECTED_GAME_APPIDS[_i]}" "${DETECTED_GAME_EXES[_i]}" "${DETECTED_GAME_PATHS[_i]}" "${DETECTED_GAME_REASONS[_i]}")
+        done
+        _args+=("" "Manual path..." "-" "-" "MANUAL" "manual")
+        _pick=$(yad "${_args[@]}" 2>/dev/null)
+        local _yadExit=$?
+        [[ -n $_iconTmpDir ]] && rm -rf "$_iconTmpDir"
+        [[ $_yadExit -ne 0 ]] && exit 0
+        if [[ $_pick == "MANUAL" ]]; then
+            _selectedAppId=""
+            promptGamePathManual
+        else
+            gamePath="$_pick"
+            _selectedAppId=""
+            for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
+                if [[ "${DETECTED_GAME_PATHS[_i]}" == "$gamePath" ]]; then
+                    _selectedAppId="${DETECTED_GAME_APPIDS[_i]}"
+                    break
+                fi
+            done
+            printf '%bSelected auto-detected game path:%b %s\n' "$_GRN" "$_R" "$gamePath"
+        fi
+        return
+    fi
+
+    local _i _choice _maxShow=25 _statusLabel
+    printf '%bDetected Steam games on this system:%b\n' "$_CYN$_B" "$_R"
+    for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]} && _i<_maxShow; _i++)); do
+        _statusLabel="${DETECTED_GAME_NAMES[_i]}"
+        [[ -f "$MAIN_PATH/game-state/${DETECTED_GAME_APPIDS[_i]}.state" ]] \
+            && _statusLabel+="  [ReShade installed]"
+        printf '  %2d) %s (AppID %s)\n      exe: %s\n      -> %s\n' \
+            "$((_i+1))" "$_statusLabel" "${DETECTED_GAME_APPIDS[_i]}" "${DETECTED_GAME_EXES[_i]}" "${DETECTED_GAME_PATHS[_i]}"
+    done
+    if [[ ${#DETECTED_GAME_PATHS[@]} -gt $_maxShow ]]; then
+        printf '  ... showing first %d of %d detected games\n' "$_maxShow" "${#DETECTED_GAME_PATHS[@]}"
+    fi
+    printf '   m) Enter path manually\n'
+
+    while true; do
+        read -rp "$(printf '%bChoose game number or m: %b' "$_YLW" "$_R")" _choice
+        if [[ $_choice =~ ^[mM]$ ]]; then
+            _selectedAppId=""
+            promptGamePathManual
+            return
+        fi
+        if [[ $_choice =~ ^[0-9]+$ ]] && (( _choice >= 1 && _choice <= ${#DETECTED_GAME_PATHS[@]} )); then
+            gamePath="${DETECTED_GAME_PATHS[$((_choice-1))]}"
+            _selectedAppId="${DETECTED_GAME_APPIDS[$((_choice-1))]}"
+            printf '%bSelected auto-detected game path:%b %s\n' "$_GRN" "$_R" "$gamePath"
+            return
+        fi
     done
 }
 
@@ -362,7 +1081,7 @@ function downloadD3dcompiler_47() {
         local url="https://raw.githubusercontent.com/mozilla/fxc2/master/dll/d3dcompiler_47.dll"
         local hash="4432bbd1a390874f3f0a503d45cc48d346abc3a8c0213c289f4b615bf0ee84f3"
     fi
-    curl --fail -Lo "${_CURL_PROG[@]}" d3dcompiler_47.dll "$url" \
+    curl --fail "${_CURL_PROG[@]}" -Lo d3dcompiler_47.dll "$url" \
         || printErr "(downloadD3dcompiler_47) Could not download d3dcompiler_47.dll."
     local dlhash _
     read -r dlhash _ < <(sha256sum d3dcompiler_47.dll)
@@ -376,7 +1095,7 @@ function downloadD3dcompiler_47() {
 # $2 -> Full URL of ReShade exe, ex.: https://reshade.me/downloads/ReShade_Setup_5.0.2.exe
 function downloadReshade() {
     createTempDir
-    curl --fail -LO "${_CURL_PROG[@]}" "$2" || printErr "Could not download version $1 of ReShade."
+    curl --fail "${_CURL_PROG[@]}" -LO "$2" || printErr "Could not download version $1 of ReShade."
     exeFile="${2##*/}"
     ! [[ -f $exeFile ]] && printErr "Download of ReShade exe file failed."
     file "$exeFile" | grep -q executable || printErr "The ReShade exe file is not an executable file, does the ReShade version exist?"
@@ -412,7 +1131,7 @@ function linkD3dcompilerToWineprefix() {
 }
 
 SEPARATOR="------------------------------------------------------------------------------------------------"
-SCRIPT_VERSION="1.0.2"
+SCRIPT_VERSION="1.1.0"
 # ANSI color helpers — used via printf '%b' throughout the script.
 _R=$'\e[0m'    # reset
 _B=$'\e[1m'    # bold
@@ -483,6 +1202,21 @@ FORCE_RESHADE_UPDATE_CHECK=${FORCE_RESHADE_UPDATE_CHECK:-0}
 RESHADE_URL="https://reshade.me"
 RESHADE_URL_ALT="https://static.reshade.me"
 WINEPREFIX=${WINEPREFIX:-""}
+# Built-in install-dir presets for known titles where launch executables
+# are often not in the game root. User GAME_DIR_PRESETS overrides these.
+BUILTIN_GAME_DIR_PRESETS="1091500|bin/x64;292030|bin/x64;275850|Binaries;1245620|Game;306130|The Elder Scrolls Online/game/client;2623190|OblivionRemastered/Binaries/Win64"
+
+# Parse command-line arguments.
+_BATCH_UPDATE=0
+for _arg in "$@"; do
+    case "$_arg" in
+        --update-all) _BATCH_UPDATE=1 ;;
+        --help|-h)
+            printf 'Usage: %s [--update-all]\n' "$0"
+            printf '  --update-all  Re-link ReShade for all previously installed games (non-interactive).\n'
+            exit 0 ;;
+    esac
+done
 
 for REQUIRED_EXECUTABLE in "${REQUIRED_EXECUTABLES[@]}"; do
     if ! command -v "$REQUIRED_EXECUTABLE" &>/dev/null; then
@@ -816,53 +1550,106 @@ if [[ $_action == "u" ]]; then
             fi
         done
     fi
+    # Clean up state file on uninstall if it exists.
+    if [[ -n $_selectedAppId && -f "$MAIN_PATH/game-state/$_selectedAppId.state" ]]; then
+        rm -f "$MAIN_PATH/game-state/$_selectedAppId.state"
+    fi
     printf '%bFinished uninstalling ReShade for:%b %s\n' "$_GRN$_B" "$_R" "$gamePath"
     printf '%bMake sure to remove or unset the %bWINEDLLOVERRIDES%b environment variable.%b\n' "$_GRN" "$_CYN$_B" "$_R$_GRN" "$_R"
     exit 0
 fi
 # Z0030
 
-# Z0035
-getGamePath
-if [[ $_GUI -eq 1 ]]; then
-    yad --question --title="ReShade" --width=520 \
-        --text="Attempt to <b>automatically detect</b> the DLL override for ReShade?\n\n<i>Click Yes to auto-detect, No to choose manually.</i>" \
-        2>/dev/null && wantedDll="auto" || wantedDll="manual"
-else
-    echo "Do you want $0 to attempt to automatically detect the right dll files to use for ReShade?"
-    [[ $(checkStdin "(y/n) " "^(y|n)$") == "y" ]] && wantedDll="auto" || wantedDll="manual"
-fi
-exeArch=32
-if [[ $wantedDll == "auto" ]]; then
-    for file in "$gamePath/"*.exe; do
-        if [[ $(file "$file") =~ x86-64 ]]; then
-            exeArch=64
-            break
+# Z0028 Batch update: re-link ReShade for all previously installed games.
+if [[ $_BATCH_UPDATE -eq 1 ]]; then
+    _stateDir="$MAIN_PATH/game-state"
+    if [[ ! -d $_stateDir ]] || ! compgen -G "$_stateDir/*.state" &>/dev/null; then
+        printf '%bNo installed games found in state store. Run without --update-all first.%b\n' "$_YLW" "$_R"
+        exit 0
+    fi
+    _ok=0; _fail=0
+    for _sf in "$_stateDir"/*.state; do
+        _aid="${_sf##*/}"; _aid="${_aid%.state}"
+        _dll=$(grep  '^dll='      "$_sf" | cut -d= -f2  | head -1)
+        _arch=$(grep '^arch='     "$_sf" | cut -d= -f2  | head -1)
+        _gp=$(grep   '^gamePath=' "$_sf" | cut -d= -f2- | head -1)
+        if [[ ! -d $_gp ]]; then
+            printf '%bSkipping AppID %s — game directory not found: %s%b\n' \
+                "$_YLW" "$_aid" "$_gp" "$_R"
+            (( _fail++ )); continue
         fi
+        printf '%bUpdating AppID %s — %s (%s-bit, %s.dll)%b\n' \
+            "$_GRN" "$_aid" "$_gp" "$_arch" "$_dll" "$_R"
+        [[ -L "$_gp/$_dll.dll" ]] && unlink "$_gp/$_dll.dll"
+        if [[ $_arch == 64 ]]; then
+            ln -is "$(realpath "$RESHADE_PATH/$RESHADE_VERSION"/ReShade64.dll)" "$_gp/$_dll.dll"
+        else
+            ln -is "$(realpath "$RESHADE_PATH/$RESHADE_VERSION"/ReShade32.dll)" "$_gp/$_dll.dll"
+        fi
+        [[ -L "$_gp/d3dcompiler_47.dll" ]] && unlink "$_gp/d3dcompiler_47.dll"
+        ln -is "$(realpath "$MAIN_PATH/d3dcompiler_47.dll.$_arch")" "$_gp/d3dcompiler_47.dll" 2>/dev/null
+        [[ -L "$_gp/ReShade_shaders" ]] && unlink "$_gp/ReShade_shaders"
+        ln -is "$(realpath "$MAIN_PATH/ReShade_shaders")" "$_gp/" 2>/dev/null
+        if [[ $GLOBAL_INI != 0 && -f "$MAIN_PATH/$GLOBAL_INI" ]]; then
+            [[ -L "$_gp/$GLOBAL_INI" ]] && unlink "$_gp/$GLOBAL_INI"
+            ln -is "$(realpath "$MAIN_PATH/$GLOBAL_INI")" "$_gp/$GLOBAL_INI" 2>/dev/null
+        fi
+        (( _ok++ ))
     done
-    [[ $exeArch -eq 32 ]] && wantedDll="d3d9" || wantedDll="dxgi"
+    printf '%bBatch update complete: %d game(s) updated, %d skipped.%b\n' \
+        "$_GRN$_B" "$_ok" "$_fail" "$_R"
+    exit 0
+fi
+
+# Z0035
+_selectedAppId=""
+getGamePath
+
+# If this game was previously installed, skip the DLL dialog and reuse stored settings.
+exeArch=32
+wantedDll=""
+_stateFile=""
+[[ -n $_selectedAppId ]] && _stateFile="$MAIN_PATH/game-state/$_selectedAppId.state"
+if [[ -f "$_stateFile" ]]; then
+    _stored_dll=$(grep  '^dll='  "$_stateFile" | cut -d= -f2 | head -1)
+    _stored_arch=$(grep '^arch=' "$_stateFile" | cut -d= -f2 | head -1)
+    if [[ -n $_stored_dll && $_stored_arch =~ ^(32|64)$ ]]; then
+        wantedDll="$_stored_dll"
+        exeArch="$_stored_arch"
+        printf '%bReusing stored settings for this game: %s-bit, %s.dll%b\n' \
+            "$_GRN" "$exeArch" "$wantedDll" "$_R"
+    fi
+fi
+
+if [[ -z $wantedDll ]]; then
+    # Auto-detect architecture and DLL via PE import table analysis.
+    _peResult=$(detectExeInfo "$gamePath")
+    if [[ -n $_peResult ]]; then
+        _pe_arch=$(grep '^arch=' <<< "$_peResult" | cut -d= -f2)
+        _pe_dll=$(grep  '^dll='  <<< "$_peResult" | cut -d= -f2)
+        [[ -n $_pe_arch ]] && exeArch="$_pe_arch"
+        [[ -n $_pe_dll  ]] && wantedDll="$_pe_dll"
+    fi
+    # Fall back to simple file(1) heuristic if PE parsing produced no result.
+    if [[ -z $wantedDll ]]; then
+        for file in "$gamePath/"*.exe; do
+            [[ -f $file ]] || continue
+            if [[ $(file "$file" 2>/dev/null) =~ x86-64 ]]; then exeArch=64; break; fi
+        done
+        [[ $exeArch -eq 32 ]] && wantedDll="d3d9" || wantedDll="dxgi"
+    fi
+    # Confirm with the user; offer manual override.
     if [[ $_GUI -eq 1 ]]; then
         yad --question --title="ReShade" --width=520 \
-            --text="Detected a <b>$exeArch-bit</b> game.\nUse <b>$wantedDll.dll</b> as the DLL override?\n\n<i>Click No to select manually.</i>" \
+            --text="Detected a <b>$exeArch-bit</b> game.\nUse <b>$wantedDll.dll</b> as the DLL override?\n\n<i>Click No to choose a different DLL manually.</i>" \
             2>/dev/null || wantedDll="manual"
     else
-        echo "We have detected the game is $exeArch bits, we will use $wantedDll.dll as the override, is this correct?"
+        printf '%bDetected %s-bit game — DLL override: %s.dll. Is this correct?%b\n' \
+            "$_CYN" "$exeArch" "$wantedDll" "$_R"
         [[ $(checkStdin "(y/n) " "^(y|n)$") == "n" ]] && wantedDll="manual"
     fi
-else
-    if [[ $_GUI -eq 1 ]]; then
-        _archPick=$(yad --list --radiolist \
-            --title="ReShade" --text="Select the game's EXE architecture:" \
-            --column="" --column="Architecture" \
-            --print-column=2 --separator="" \
-            --width=420 --height=220 \
-            TRUE "64-bit" FALSE "32-bit" 2>/dev/null) || exit 0
-        [[ $_archPick == *"32"* ]] && exeArch=32 || exeArch=64
-    else
-        echo "Specify if the game's EXE file architecture is 32 or 64 bits:"
-        [[ $(checkStdin "(32/64) " "^(32|64)$") == 64 ]] && exeArch=64
-    fi
 fi
+
 if [[ $wantedDll == "manual" ]]; then
     if [[ $_GUI -eq 1 ]]; then
         while true; do
@@ -945,12 +1732,26 @@ if [[ -f $MAIN_PATH/$LINK_PRESET ]]; then
 fi
 # Z0045
 
+# Persist installation details so future runs can skip the DLL dialog
+# and the batch --update-all mode knows which games have ReShade.
+writeGameState "$_selectedAppId" "$gamePath" "$wantedDll" "$exeArch"
+
 gameEnvVar="WINEDLLOVERRIDES=\"d3dcompiler_47=n;$wantedDll=n,b\""
 
-# In GUI mode, copy the Steam launch option to the clipboard if possible.
+# Try to write the Steam launch option directly into localconfig.vdf.
+_launchOpt="$gameEnvVar %command%"
+_launchApplied=0
+if [[ -n $_selectedAppId ]]; then
+    if applyLaunchOption "$_selectedAppId" "$_launchOpt"; then
+        _launchApplied=1
+        printf '%bSteam launch option written automatically%b (restart Steam if already running).%b\n' \
+            "$_GRN" "$_YLW" "$_R"
+    fi
+fi
+
+# In GUI mode, also copy the Steam launch option to the clipboard if possible.
 _clipNote=""
 if [[ $_GUI -eq 1 ]]; then
-    _launchOpt="$gameEnvVar %command%"
     if [[ -n ${WAYLAND_DISPLAY:-} ]] && command -v wl-copy &>/dev/null; then
         printf '%s' "$_launchOpt" | wl-copy 2>/dev/null \
             && _clipNote="\n\n<i>The Steam launch option has been copied to your clipboard.</i>"
@@ -958,8 +1759,10 @@ if [[ $_GUI -eq 1 ]]; then
         printf '%s' "$_launchOpt" | xclip -selection clipboard 2>/dev/null \
             && _clipNote="\n\n<i>The Steam launch option has been copied to your clipboard.</i>"
     fi
-    unset _launchOpt
+    [[ $_launchApplied -eq 1 && -z $_clipNote ]] \
+        && _clipNote="\n\n<i>Steam launch option applied automatically.</i>"
 fi
+unset _launchOpt
 
 printf '%b%s\n  Done!\n%s%b\n' "$_GRN$_B" "$SEPARATOR" "$SEPARATOR" "$_R"
 printf '\n%bSteam launch option%b (Game Properties → Launch Options):\n  %b%s %%command%%%b\n' \
