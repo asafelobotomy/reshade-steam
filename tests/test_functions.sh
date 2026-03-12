@@ -8,6 +8,36 @@
 # CORE DETECTION FUNCTIONS (extracted from reshade-linux.sh)
 # ============================================================================
 
+function chooseUiBackend() {
+    local _hasTty="${1:-0}"
+    local _forced="${UI_BACKEND:-auto}"
+    case $_forced in
+        auto) ;;
+        yad|whiptail|dialog|cli)
+            printf '%s\n' "$_forced"
+            return
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    if [[ -n ${DISPLAY:-}${WAYLAND_DISPLAY:-} ]] && command -v yad &>/dev/null; then
+        printf 'yad\n'
+        return
+    fi
+    if [[ $_hasTty -eq 1 ]]; then
+        if command -v whiptail &>/dev/null; then
+            printf 'whiptail\n'
+            return
+        fi
+        if command -v dialog &>/dev/null; then
+            printf 'dialog\n'
+            return
+        fi
+    fi
+    printf 'cli\n'
+}
+
 # Pick the most likely game executable from a directory.
 # ReShade requires the ACTUAL game executable for DLL injection (via WINEDLLOVERRIDES).
 # Filters out utilities (crash handlers, installers, etc.) and scores by name similarity to parent folder.
@@ -114,6 +144,14 @@ function findSteamIconPath() {
         # Fall through to header.jpg
         [[ -f "$_libDir/header.jpg" ]] && { printf '%s\n' "$_libDir/header.jpg"; return; }
     fi
+}
+
+function parseShaderRepoEntry() {
+    local _entry="$1"
+    local _savedIFS="$IFS"
+    IFS='|' read -r _shaderRepoUri _shaderRepoName _shaderRepoBranch _shaderRepoDesc <<< "$_entry"
+    IFS="$_savedIFS"
+    [[ -z $_shaderRepoDesc ]] && _shaderRepoDesc="$_shaderRepoUri"
 }
 
 # Return preset subdirectory for an AppID from BUILTIN_GAME_DIR_PRESETS.
@@ -223,13 +261,12 @@ function isReshadeInstalledOnDisk() {
 
 function getDefaultSelectedRepos() {
     local -a _names=()
-    local _savedIFS="$IFS" _entry _uri _repoName _branch
+    local _savedIFS="$IFS" _entry
     IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
     IFS="$_savedIFS"
     for _entry in "${_allRepos[@]}"; do
-        IFS='|' read -r _uri _repoName _branch <<< "$_entry"
-        IFS="$_savedIFS"
-        [[ -n $_repoName ]] && _names+=("$_repoName")
+        parseShaderRepoEntry "$_entry"
+        [[ -n $_shaderRepoName ]] && _names+=("$_shaderRepoName")
     done
     local IFS=','
     printf '%s\n' "${_names[*]}"
@@ -300,14 +337,14 @@ function buildGameShaderDir() {
     local _gameShaderDir="$MAIN_PATH/game-shaders/$_gameKey"
     rm -rf "$_gameShaderDir"
     mkdir -p "$_gameShaderDir/Merged/Shaders" "$_gameShaderDir/Merged/Textures"
-    local _outBase="$_gameShaderDir/Merged"
+    local _outBase="$_gameShaderDir/Merged" _entry
     IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
     for _entry in "${_allRepos[@]}"; do
-        IFS='|' read -r _uri _repoName _branch <<< "$_entry"
-        [[ -z $_repoName ]] && continue
-        [[ ",$_selectedRepos," != *",$_repoName,"* ]] && continue
-        [[ ! -d "$MAIN_PATH/ReShade_shaders/$_repoName" ]] && continue
-        mergeShaderDirsTo "ReShade_shaders" "$_repoName" "$_outBase"
+        parseShaderRepoEntry "$_entry"
+        [[ -z $_shaderRepoName ]] && continue
+        [[ ",$_selectedRepos," != *",$_shaderRepoName,"* ]] && continue
+        [[ ! -d "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" ]] && continue
+        mergeShaderDirsTo "ReShade_shaders" "$_shaderRepoName" "$_outBase"
     done
     if [[ -d "$MAIN_PATH/External_shaders" ]]; then
         mergeShaderDirsTo "External_shaders" "" "$_outBase"

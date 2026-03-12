@@ -24,6 +24,7 @@ cat > /dev/null <<DESCRIPTION
     Requirements:
         grep, 7z, curl, git, file, sed, sha256sum
         wine : only needed for Vulkan registry setup
+        yad : optional graphical UI when a desktop session is available
         whiptail or dialog : optional terminal UI; otherwise plain CLI prompts are used
 
     Notes:
@@ -40,16 +41,61 @@ cat > /dev/null <<DESCRIPTION
         ./reshade-linux.sh --update-all
 DESCRIPTION
 
+function chooseUiBackend() {
+    local _hasTty="${1:-0}"
+    local _forced="${UI_BACKEND:-auto}"
+    case $_forced in
+        auto) ;;
+        yad|whiptail|dialog|cli)
+            printf '%s\n' "$_forced"
+            return
+            ;;
+        *)
+            printErr "Invalid UI_BACKEND='$_forced'. Expected one of: auto, yad, whiptail, dialog, cli."
+            ;;
+    esac
+    if [[ -n ${DISPLAY:-}${WAYLAND_DISPLAY:-} ]] && command -v yad &>/dev/null; then
+        printf 'yad\n'
+        return
+    fi
+    if [[ $_hasTty -eq 1 ]]; then
+        if command -v whiptail &>/dev/null; then
+            printf 'whiptail\n'
+            return
+        fi
+        if command -v dialog &>/dev/null; then
+            printf 'dialog\n'
+            return
+        fi
+    fi
+    printf 'cli\n'
+}
+
+function ui_yad_dims() {
+    local _height="${1:-14}" _width="${2:-70}"
+    local _pxHeight=$((_height * 24)) _pxWidth=$((_width * 8))
+    (( _pxHeight < 180 )) && _pxHeight=180
+    (( _pxWidth < 420 )) && _pxWidth=420
+    printf '%s %s\n' "$_pxHeight" "$_pxWidth"
+}
+
 function ui_capture() {
     local _result _status
     set +e
-    if [[ $_UI_BACKEND == whiptail ]]; then
-        _result=$("$@" 3>&1 1>&2 2>&3)
-        _status=$?
-    else
-        _result=$("$@" 3>&1 1>/dev/tty 2>&3)
-        _status=$?
-    fi
+    case $_UI_BACKEND in
+        whiptail)
+            _result=$("$@" 3>&1 1>&2 2>&3)
+            _status=$?
+            ;;
+        dialog)
+            _result=$("$@" 3>&1 1>/dev/tty 2>&3)
+            _status=$?
+            ;;
+        *)
+            _result=$("$@")
+            _status=$?
+            ;;
+    esac
     set -e
     ui_refresh_screen
     printf '%s' "$_result"
@@ -57,7 +103,7 @@ function ui_capture() {
 }
 
 function ui_refresh_screen() {
-    [[ $_UI_BACKEND == cli ]] && return 0
+    [[ $_UI_BACKEND == cli || $_UI_BACKEND == yad ]] && return 0
     local _ui_out="/dev/tty"
     [[ -w $_ui_out ]] || _ui_out="/dev/stderr"
     if command -v tput &>/dev/null; then
@@ -81,7 +127,12 @@ function ui_run() {
 
 function ui_msgbox() {
     local _title="$1" _text="$2" _height="${3:-14}" _width="${4:-70}"
+    local _pxHeight _pxWidth
     case $_UI_BACKEND in
+        yad)
+            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
+            ui_run yad --info --title="$_title" --text="$_text" --height="$_pxHeight" --width="$_pxWidth" >/dev/null 2>&1
+            ;;
         whiptail) ui_run whiptail --clear --title "$_title" --msgbox "$_text" "$_height" "$_width" ;;
         dialog) ui_run dialog --clear --title "$_title" --msgbox "$_text" "$_height" "$_width" ;;
         *) return 0 ;;
@@ -90,7 +141,12 @@ function ui_msgbox() {
 
 function ui_yesno() {
     local _title="$1" _text="$2" _height="${3:-12}" _width="${4:-70}"
+    local _pxHeight _pxWidth
     case $_UI_BACKEND in
+        yad)
+            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
+            ui_run yad --question --title="$_title" --text="$_text" --height="$_pxHeight" --width="$_pxWidth" >/dev/null 2>&1
+            ;;
         whiptail) ui_run whiptail --clear --title "$_title" --yesno "$_text" "$_height" "$_width" ;;
         dialog) ui_run dialog --clear --title "$_title" --yesno "$_text" "$_height" "$_width" ;;
         *) return 1 ;;
@@ -99,17 +155,43 @@ function ui_yesno() {
 
 function ui_inputbox() {
     local _title="$1" _text="$2" _default="${3:-}" _height="${4:-14}" _width="${5:-78}"
+    local _pxHeight _pxWidth
     case $_UI_BACKEND in
+        yad)
+            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
+            ui_capture yad --entry --title="$_title" --text="$_text" --entry-text="$_default" --height="$_pxHeight" --width="$_pxWidth" 2>/dev/null
+            ;;
         whiptail) ui_capture whiptail --clear --title "$_title" --inputbox "$_text" "$_height" "$_width" "$_default" ;;
         dialog) ui_capture dialog --clear --title "$_title" --inputbox "$_text" "$_height" "$_width" "$_default" ;;
         *) return 1 ;;
     esac
 }
 
+function ui_directorybox() {
+    local _title="$1" _startDir="${2:-$HOME}" _height="${3:-24}" _width="${4:-95}"
+    local _pxHeight _pxWidth
+    case $_UI_BACKEND in
+        yad)
+            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
+            ui_capture yad --file --directory --title="$_title" --filename="$_startDir/" --height="$_pxHeight" --width="$_pxWidth" 2>/dev/null
+            ;;
+        *)
+            ui_inputbox "$_title" "Enter a directory path:" "$_startDir/" "$_height" "$_width"
+            ;;
+    esac
+}
+
 function ui_menu() {
     local _title="$1" _text="$2" _height="$3" _width="$4" _menuHeight="$5"
+    local _pxHeight _pxWidth
     shift 5
     case $_UI_BACKEND in
+        yad)
+            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
+            ui_capture yad --list --title="$_title" --text="$_text" \
+                --column="Key" --column="Choice" --print-column=1 --separator="" \
+                --height="$_pxHeight" --width="$_pxWidth" "$@" 2>/dev/null
+            ;;
         whiptail) ui_capture whiptail --clear --title "$_title" --menu "$_text" "$_height" "$_width" "$_menuHeight" "$@" ;;
         dialog) ui_capture dialog --clear --title "$_title" --menu "$_text" "$_height" "$_width" "$_menuHeight" "$@" ;;
         *) return 1 ;;
@@ -118,8 +200,22 @@ function ui_menu() {
 
 function ui_radiolist() {
     local _title="$1" _text="$2" _height="$3" _width="$4" _listHeight="$5"
+    local _pxHeight _pxWidth _tag _label _state _yadState
+    local -a _rows=()
     shift 5
     case $_UI_BACKEND in
+        yad)
+            while [[ $# -ge 3 ]]; do
+                _tag="$1"; _label="$2"; _state="$3"; shift 3
+                [[ $_state == ON ]] && _yadState=TRUE || _yadState=FALSE
+                _rows+=("$_yadState" "$_tag" "$_label")
+            done
+            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
+            ui_capture yad --list --radiolist --title="$_title" --text="$_text" \
+                --column="" --column="Key" --column="Choice" --hide-column=2 \
+                --print-column=2 --separator="" --height="$_pxHeight" --width="$_pxWidth" \
+                "${_rows[@]}" 2>/dev/null
+            ;;
         whiptail) ui_capture whiptail --clear --title "$_title" --radiolist "$_text" "$_height" "$_width" "$_listHeight" "$@" ;;
         dialog) ui_capture dialog --clear --title "$_title" --radiolist "$_text" "$_height" "$_width" "$_listHeight" "$@" ;;
         *) return 1 ;;
@@ -128,8 +224,22 @@ function ui_radiolist() {
 
 function ui_checklist() {
     local _title="$1" _text="$2" _height="$3" _width="$4" _listHeight="$5"
+    local _pxHeight _pxWidth _tag _label _state _yadState
+    local -a _rows=()
     shift 5
     case $_UI_BACKEND in
+        yad)
+            while [[ $# -ge 3 ]]; do
+                _tag="$1"; _label="$2"; _state="$3"; shift 3
+                [[ $_state == ON ]] && _yadState=TRUE || _yadState=FALSE
+                _rows+=("$_yadState" "$_tag" "$_label")
+            done
+            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
+            ui_capture yad --list --checklist --title="$_title" --text="$_text" \
+                --column="" --column="Key" --column="Choice" --hide-column=2 \
+                --print-column=2 --separator=" " --height="$_pxHeight" --width="$_pxWidth" \
+                "${_rows[@]}" 2>/dev/null
+            ;;
         whiptail) ui_capture whiptail --clear --title "$_title" --checklist "$_text" "$_height" "$_width" "$_listHeight" "$@" ;;
         dialog) ui_capture dialog --clear --title "$_title" --checklist "$_text" "$_height" "$_width" "$_listHeight" "$@" ;;
         *) return 1 ;;
@@ -167,6 +277,7 @@ function printStep() {
 # Print a fatal error message to stderr and exit.
 function printErr() {
     printf '%b[ERROR] %s%b\n' "$_RED$_B" "$*" "$_R" >&2
+    [[ ${_UI_BACKEND:-cli} == yad ]] && yad --error --title="ReShade - Error" --text="$*" --width=520 >/dev/null 2>&1 || true
     exit 1
 }
 
@@ -175,6 +286,17 @@ function printErr() {
 # The command runs in the current shell so functions and cd side-effects work normally.
 function withProgress() {
     local text="$1"; shift
+    if [[ $_UI_BACKEND == yad ]]; then
+        (while true; do printf '1\n'; sleep 0.1; done) \
+            | yad --progress --pulsate --no-buttons --auto-close \
+                  --title="ReShade" --text="$text" --width=520 >/dev/null 2>&1 &
+        local _yadPid=$!
+        "$@"
+        local _ret=$?
+        kill "$_yadPid" 2>/dev/null || true
+        wait "$_yadPid" 2>/dev/null || true
+        return $_ret
+    fi
     if [[ $_UI_BACKEND != cli ]]; then
         ui_infobox "ReShade" "$text" 10 70
         sleep 0.1
@@ -662,16 +784,25 @@ function copyToClipboard() {
     return 1
 }
 
+# Parse a SHADER_REPOS entry into shared variables.
+# Format: URL|localname[|branch[|description]]
+function parseShaderRepoEntry() {
+    local _entry="$1"
+    local _savedIFS="$IFS"
+    IFS='|' read -r _shaderRepoUri _shaderRepoName _shaderRepoBranch _shaderRepoDesc <<< "$_entry"
+    IFS="$_savedIFS"
+    [[ -z $_shaderRepoDesc ]] && _shaderRepoDesc="$_shaderRepoUri"
+}
+
 # Return a comma-separated list of all configured shader repo names.
 function getDefaultSelectedRepos() {
     local -a _names=()
-    local _savedIFS="$IFS" _entry _uri _repoName _branch
+    local _savedIFS="$IFS" _entry
     IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
     IFS="$_savedIFS"
     for _entry in "${_allRepos[@]}"; do
-        IFS='|' read -r _uri _repoName _branch <<< "$_entry"
-        IFS="$_savedIFS"
-        [[ -n $_repoName ]] && _names+=("$_repoName")
+        parseShaderRepoEntry "$_entry"
+        [[ -n $_shaderRepoName ]] && _names+=("$_shaderRepoName")
     done
     local IFS=','
     printf '%s\n' "${_names[*]}"
@@ -715,14 +846,14 @@ function buildGameShaderDir() {
     local _gameShaderDir="$MAIN_PATH/game-shaders/$_gameKey"
     rm -rf "$_gameShaderDir"
     mkdir -p "$_gameShaderDir/Merged/Shaders" "$_gameShaderDir/Merged/Textures"
-    local _outBase="$_gameShaderDir/Merged"
+    local _outBase="$_gameShaderDir/Merged" _entry
     IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
     for _entry in "${_allRepos[@]}"; do
-        IFS='|' read -r _uri _repoName _branch <<< "$_entry"
-        [[ -z $_repoName ]] && continue
-        [[ ",$_selectedRepos," != *",$_repoName,"* ]] && continue
-        [[ ! -d "$MAIN_PATH/ReShade_shaders/$_repoName" ]] && continue
-        mergeShaderDirsTo "ReShade_shaders" "$_repoName" "$_outBase"
+        parseShaderRepoEntry "$_entry"
+        [[ -z $_shaderRepoName ]] && continue
+        [[ ",$_selectedRepos," != *",$_shaderRepoName,"* ]] && continue
+        [[ ! -d "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" ]] && continue
+        mergeShaderDirsTo "ReShade_shaders" "$_shaderRepoName" "$_outBase"
     done
     if [[ -d "$MAIN_PATH/External_shaders" ]]; then
         mergeShaderDirsTo "External_shaders" "" "$_outBase"
@@ -779,17 +910,15 @@ function selectShaders() {
     local _savedIFS="$IFS"
     IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
     IFS="$_savedIFS"
-    local _entry _uri _name _branch _desc _checked
+    local _entry _checked
     for _entry in "${_allRepos[@]}"; do
-        IFS='|' read -r _uri _name _branch _desc <<< "$_entry"
-        IFS="$_savedIFS"
-        [[ -z $_name ]] && continue
-        [[ -z $_desc ]] && _desc="$_uri"
-        _checked="$(repoChecklistState "$_current" "$_name")"
-        _names+=("$_name")
-        _uris+=("$_uri")
-        _descs+=("$_desc")
-        _rows+=("$_name" "$_desc" "$_checked")
+        parseShaderRepoEntry "$_entry"
+        [[ -z $_shaderRepoName ]] && continue
+        _checked="$(repoChecklistState "$_current" "$_shaderRepoName")"
+        _names+=("$_shaderRepoName")
+        _uris+=("$_shaderRepoUri")
+        _descs+=("$_shaderRepoDesc")
+        _rows+=("$_shaderRepoName" "$_shaderRepoDesc" "$_checked")
     done
     local -a _selected_names=()
     if [[ $_UI_BACKEND != cli ]]; then
@@ -944,9 +1073,7 @@ function promptGamePathManual() {
         local _startDir="$HOME/.local/share/Steam/steamapps/common"
         [[ ! -d $_startDir ]] && _startDir="$HOME"
         while true; do
-            gamePath=$(ui_inputbox "ReShade - Game Folder" \
-                "Enter the game folder containing the main .exe file:" \
-                "$_startDir/") || exit 0
+            gamePath=$(ui_directorybox "ReShade - Select the game folder" "$_startDir") || exit 0
             if [[ -z $gamePath ]]; then
                 ui_yesno "ReShade" "No folder entered. Exit the script?" 10 60 \
                     && exit 0
@@ -1137,21 +1264,16 @@ _RED=$'\e[31m' # red   (errors)
 _GRN=$'\e[32m' # green (success / info)
 _YLW=$'\e[33m' # yellow (warnings / prompts)
 _CYN=$'\e[36m' # cyan  (section headers)
-# TUI mode: prefer whiptail, then dialog, else fall back to plain CLI.
-_UI_BACKEND=cli
-if [[ -t 0 && -t 1 ]]; then
-    if command -v whiptail &>/dev/null; then
-        _UI_BACKEND=whiptail
-    elif command -v dialog &>/dev/null; then
-        _UI_BACKEND=dialog
-    fi
-fi
+_has_tty=0
+[[ -t 0 && -t 1 ]] && _has_tty=1
+_UI_BACKEND=$(chooseUiBackend "$_has_tty")
 # Curl progress flag: visible progress bar in CLI; silent in TUI (dialog boxes provide context already).
 _CURL_PROG=(--progress-bar)
 [[ $_UI_BACKEND != cli ]] && _CURL_PROG=(--silent)
 COMMON_OVERRIDES="d3d8 d3d9 d3d11 d3d12 ddraw dinput8 dxgi opengl32"
 REQUIRED_EXECUTABLES=(7z curl file git grep sed sha256sum)
 XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
+UI_BACKEND=${UI_BACKEND:-auto}
 # Auto-detect Flatpak vs native Steam when MAIN_PATH is not explicitly set by user.
 if [[ -z ${MAIN_PATH+x} ]]; then
     _flatpak_data="$HOME/.var/app/com.valvesoftware.Steam/.local/share"
@@ -1322,23 +1444,23 @@ if [[ -n $SHADER_REPOS ]]; then
     printStep "Checking for shader updates"
     IFS=';' read -ra _shaderRepos <<< "$SHADER_REPOS"
     for _repoEntry in "${_shaderRepos[@]}"; do
-        IFS='|' read -r URI localRepoName branchName <<< "$_repoEntry"
-        if [[ -d "$MAIN_PATH/ReShade_shaders/$localRepoName" ]]; then
+        parseShaderRepoEntry "$_repoEntry"
+        if [[ -d "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" ]]; then
             if [[ $UPDATE_RESHADE -eq 1 ]]; then
-                cd "$MAIN_PATH/ReShade_shaders/$localRepoName" || continue
-                printf '%bUpdating shader repo:%b %s\n' "$_GRN" "$_R" "$URI"
-                withProgress "Updating shader repo:\n<tt>$URI</tt>" \
+                cd "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" || continue
+                printf '%bUpdating shader repo:%b %s\n' "$_GRN" "$_R" "$_shaderRepoUri"
+                withProgress "Updating shader repo:\n<tt>$_shaderRepoUri</tt>" \
                     git pull --ff-only \
-                    || printf '%bCould not update shader repo: %s%b\n' "$_YLW" "$URI" "$_R"
+                    || printf '%bCould not update shader repo: %s%b\n' "$_YLW" "$_shaderRepoUri" "$_R"
             fi
         else
             cd "$MAIN_PATH/ReShade_shaders" || exit
             branchArgs=()
-            [[ -n $branchName ]] && branchArgs=(--branch "$branchName" --single-branch)
-            printf '%bCloning shader repo:%b %s\n' "$_GRN" "$_R" "$URI"
-            withProgress "Cloning shader repo:\n<tt>$URI</tt>" \
-                git clone --depth 1 "${branchArgs[@]}" "$URI" "$localRepoName" \
-                || printf '%bCould not clone shader repo: %s%b\n' "$_YLW" "$URI" "$_R"
+            [[ -n $_shaderRepoBranch ]] && branchArgs=(--branch "$_shaderRepoBranch" --single-branch)
+            printf '%bCloning shader repo:%b %s\n' "$_GRN" "$_R" "$_shaderRepoUri"
+            withProgress "Cloning shader repo:\n<tt>$_shaderRepoUri</tt>" \
+                git clone --depth 1 "${branchArgs[@]}" "$_shaderRepoUri" "$_shaderRepoName" \
+                || printf '%bCould not clone shader repo: %s%b\n' "$_YLW" "$_shaderRepoUri" "$_R"
         fi
     done
     if [[ -d "$MAIN_PATH/External_shaders" ]]; then
@@ -1416,9 +1538,7 @@ if [[ $VULKAN_SUPPORT == 1 ]]; then
             _startDir="$HOME/.local/share/Steam/steamapps/compatdata"
             [[ ! -d $_startDir ]] && _startDir="$HOME"
             while true; do
-                WINEPREFIX=$(ui_inputbox "ReShade - WINEPREFIX" \
-                    "Enter the game's WINEPREFIX path:" \
-                    "$_startDir/") || exit 0
+                WINEPREFIX=$(ui_directorybox "ReShade - Select WINEPREFIX folder" "$_startDir") || exit 0
                 [[ -z $WINEPREFIX ]] && exit 0
                 WINEPREFIX="${WINEPREFIX/#\~/$HOME}"
                 WINEPREFIX=$(realpath "$WINEPREFIX" 2>/dev/null)

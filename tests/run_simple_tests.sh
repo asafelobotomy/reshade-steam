@@ -155,6 +155,54 @@ test_icon_missing() {
 }
 
 # ============================================================================
+# UI BACKEND TESTS
+# ============================================================================
+
+test_ui_backend_prefers_yad_in_graphical_session() {
+    local fakebin="$TEST_TEMP_DIR/fakebin"
+    local result
+    mkdir -p "$fakebin"
+    printf '#!/bin/sh\nexit 0\n' > "$fakebin/yad"
+    chmod +x "$fakebin/yad"
+
+    result=$(PATH="$fakebin:$PATH" DISPLAY=:1 WAYLAND_DISPLAY='' chooseUiBackend 1)
+    [[ "$result" == "yad" ]]
+}
+
+test_ui_backend_uses_whiptail_on_tty_without_yad() {
+    local fakebin="$TEST_TEMP_DIR/fakebin"
+    local result
+    mkdir -p "$fakebin"
+    printf '#!/bin/sh\nexit 0\n' > "$fakebin/whiptail"
+    chmod +x "$fakebin/whiptail"
+
+    result=$(PATH="$fakebin:$PATH" DISPLAY='' WAYLAND_DISPLAY='' chooseUiBackend 1)
+    [[ "$result" == "whiptail" ]]
+}
+
+test_ui_backend_falls_back_to_cli_without_tools() {
+    local result
+    result=$(DISPLAY='' WAYLAND_DISPLAY='' chooseUiBackend 0)
+    [[ "$result" == "cli" ]]
+}
+
+test_ui_backend_honors_forced_cli_override() {
+    local result
+    result=$(UI_BACKEND=cli DISPLAY=:1 WAYLAND_DISPLAY=:1 chooseUiBackend 1)
+    [[ "$result" == "cli" ]]
+}
+
+test_ui_backend_honors_forced_yad_override() {
+    local result
+    result=$(UI_BACKEND=yad DISPLAY='' WAYLAND_DISPLAY='' chooseUiBackend 0)
+    [[ "$result" == "yad" ]]
+}
+
+test_ui_backend_rejects_invalid_override() {
+    ! UI_BACKEND=broken chooseUiBackend 1 >/dev/null 2>&1
+}
+
+# ============================================================================
 # PRESET TESTS
 # ============================================================================
 
@@ -379,6 +427,23 @@ test_state_default_repo_names_support_descriptions() {
     [[ "$_repos" == "alpha,beta" ]]
 }
 
+test_state_shader_repo_parser_keeps_empty_branch_with_description() {
+    local _shaderRepoUri="" _shaderRepoName="" _shaderRepoBranch="" _shaderRepoDesc=""
+    export SHADER_REPOS="https://example.com/repo|alpha||Description text"
+    parseShaderRepoEntry "https://example.com/repo|alpha||Description text"
+    [[ "$_shaderRepoUri" == "https://example.com/repo" ]] || return 1
+    [[ "$_shaderRepoName" == "alpha" ]] || return 1
+    [[ -z "$_shaderRepoBranch" ]] || return 1
+    [[ "$_shaderRepoDesc" == "Description text" ]]
+}
+
+test_shader_build_supports_description_without_branch() {
+    export SHADER_REPOS="https://example.com/a|alpha||Alpha description"
+    create_mock_shader_repo "alpha"
+    buildGameShaderDir "55555" "alpha"
+    [[ -L "$MAIN_PATH/game-shaders/55555/Merged/Shaders/alpha.fx" ]]
+}
+
 # ============================================================================
 # RELEASE METADATA TESTS
 # ============================================================================
@@ -489,6 +554,15 @@ main() {
     run_test "Missing icon handling" test_icon_missing
     echo ""
 
+    echo -e "${BLUE}UI Backend Tests${NC}"
+    run_test "Graphical sessions prefer YAD" test_ui_backend_prefers_yad_in_graphical_session
+    run_test "TTY sessions use whiptail fallback" test_ui_backend_uses_whiptail_on_tty_without_yad
+    run_test "No UI tools falls back to CLI" test_ui_backend_falls_back_to_cli_without_tools
+    run_test "Forced CLI override wins" test_ui_backend_honors_forced_cli_override
+    run_test "Forced YAD override wins" test_ui_backend_honors_forced_yad_override
+    run_test "Invalid UI_BACKEND is rejected" test_ui_backend_rejects_invalid_override
+    echo ""
+
     echo -e "${BLUE}Preset Tests${NC}"
     run_test "Cyberpunk 2077 preset" test_preset_cyberpunk
     run_test "Witcher 3 preset" test_preset_witcher
@@ -521,6 +595,7 @@ main() {
     run_test "Missing dll field is rejected" test_state_rejects_missing_dll_field
     run_test "Missing gamePath field is rejected" test_state_rejects_missing_gamepath_field
     run_test "Default repo parsing supports descriptions" test_state_default_repo_names_support_descriptions
+    run_test "Shader repo parser keeps empty branch" test_state_shader_repo_parser_keeps_empty_branch_with_description
     echo ""
 
     echo -e "${BLUE}Release Metadata Tests${NC}"
@@ -534,6 +609,7 @@ main() {
     run_test "Excludes unselected repo" test_shader_build_excludes_unselected_repo
     run_test "Includes external shaders" test_shader_build_includes_external
     run_test "Rebuild replaces previous" test_shader_rebuild_replaces_previous
+    run_test "Build supports description without branch" test_shader_build_supports_description_without_branch
     run_test "Per-game ReShade.ini uses relative paths" test_game_ini_is_per_game_and_relative
     echo ""
 

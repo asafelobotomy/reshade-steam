@@ -20,6 +20,8 @@ The current shell suite covers:
 
 - executable selection and utility filtering
 - Steam icon lookup priority
+- UI backend selection across YAD, terminal UI, and CLI fallback
+- explicit `UI_BACKEND` override handling and validation
 - built-in and custom install-directory resolution
 - scan fallback for nested executable layouts when heuristic directories do not match
 - per-game state read/write behavior

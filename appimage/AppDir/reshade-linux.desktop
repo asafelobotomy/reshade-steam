@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=ReShade Linux
+Comment=Install ReShade for Wine and Proton games on Linux
+Exec=reshade-linux-gui.sh
+Icon=reshade-linux
+Type=Application
+Categories=Game;Utility;
+Terminal=false
+StartupNotify=true
