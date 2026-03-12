@@ -164,6 +164,12 @@ function printStep() {
     printf '%b==> %s%b\n' "$_CYN$_B" "$1" "$_R"
 }
 
+# Print a fatal error message to stderr and exit.
+function printErr() {
+    printf '%b[ERROR] %s%b\n' "$_RED$_B" "$*" "$_R" >&2
+    exit 1
+}
+
 # Run a command while showing a lightweight TUI infobox when available.
 # $1 = dialog label text; remaining args = command + arguments to execute.
 # The command runs in the current shell so functions and cd side-effects work normally.
@@ -373,10 +379,9 @@ function resolveGameInstallDir() {
     fi
 
     for _candidate in \
-        "." \
         "Binaries/Win64" "Binaries/Win32" "Binaries" \
         "bin/x64" "bin/x86" "bin" \
-        "Win64" "Win32" "x64" "x86"; do
+        "Win64" "Win32" "x64" "x86" "."; do
         if [[ $_candidate == "." ]]; then
             _candidate="$_root"
         else
@@ -625,81 +630,19 @@ function writeGameState() {
         "$_dll" "$_arch" "$_gp" "$_repos" "$_appId" > "$_dir/$_gameKey.state"
 }
 
-# Write or replace the Steam launch option for a game in localconfig.vdf.
-# $1=appId  $2=full launch option string (for example: WINEDLLOVERRIDES="..." %command%)
-# Returns success if at least one matching localconfig.vdf was updated.
-function applyLaunchOption() {
-    local _aid="$1" _opt="$2"
-    [[ -z $_aid || -z $_opt ]] && return 1
-    command -v python3 &>/dev/null || return 1
-
-    local _vcfg _applied=0
-    for _vcfg in \
-        "$HOME/.local/share/Steam/userdata"/*/config/localconfig.vdf \
-        "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam/userdata"/*/config/localconfig.vdf; do
-        [[ -f $_vcfg ]] || continue
-        python3 - "$_vcfg" "$_aid" "$_opt" <<'PYEOF' >/dev/null 2>&1
-import re
-import shutil
-import sys
-
-vdf_path, appid, launch_opt = sys.argv[1], sys.argv[2], sys.argv[3]
-
-with open(vdf_path, encoding="utf-8", errors="replace") as handle:
-    text = handle.read()
-
-apps_match = re.search(r'"[Aa]pps"\s*\{', text)
-if not apps_match:
-    sys.exit(1)
-
-appid_match = re.search(rf'"{re.escape(appid)}"\s*\{{', text[apps_match.end():])
-if not appid_match:
-    sys.exit(1)
-
-block_start = apps_match.end() + appid_match.end()
-depth = 1
-block_end = block_start
-for offset, char in enumerate(text[block_start:]):
-    if char == '{':
-        depth += 1
-    elif char == '}':
-        depth -= 1
-        if depth == 0:
-            block_end = block_start + offset
-            break
-else:
-    sys.exit(1)
-
-block = text[block_start:block_end]
-escaped_launch_opt = launch_opt.replace('\\', '\\\\').replace('"', '\\"')
-launch_line = f'"LaunchOptions"\t\t"{escaped_launch_opt}"'
-launch_re = re.compile(r'(?im)^(\s*)"LaunchOptions"\s+".*"$')
-if launch_re.search(block):
-    new_block = launch_re.sub(lambda match: f'{match.group(1)}{launch_line}', block, count=1)
-else:
-    indent_match = re.search(r'\n(\s+)"', block)
-    indent = indent_match.group(1) if indent_match else '\t' * 8
-    new_block = block.rstrip() + f'\n{indent}{launch_line}\n'
-
-new_text = text[:block_start] + new_block + text[block_end:]
-if new_text == text:
-    sys.exit(0)
-
-shutil.copy2(vdf_path, vdf_path + '.reshade.bak')
-with open(vdf_path, 'w', encoding='utf-8') as handle:
-    handle.write(new_text)
-PYEOF
-        if [[ $? -eq 0 ]]; then
-            _applied=1
-            printf '%bUpdated%b %s\n' "$_GRN" "$_R" "$_vcfg" >&2
-        fi
-    done
-
-    [[ $_applied -eq 1 ]]
-}
-
-function steamIsRunning() {
-    ps -eo comm= 2>/dev/null | grep -Eq '^(steam|steamwebhelper)$'
+# Returns 0 if ReShade is actually installed for a given game key.
+# Checks both the state file exists AND the DLL it recorded is present on disk.
+# This prevents false "installed" positives when a game was reinstalled or DLLs
+# were manually removed while the state file was left behind.
+# $1: path to the .state file
+function isReshadeInstalledOnDisk() {
+    local _stateFile="$1"
+    [[ -f $_stateFile ]] || return 1
+    local _dll _gamePath
+    _dll=$(grep '^dll=' "$_stateFile" | cut -d= -f2- | head -1)
+    _gamePath=$(grep '^gamePath=' "$_stateFile" | cut -d= -f2- | head -1)
+    [[ -n $_dll && -n $_gamePath ]] || return 1
+    [[ -f "$_gamePath/$_dll.dll" ]]
 }
 
 function copyToClipboard() {
@@ -828,28 +771,39 @@ function ensureGamePreset() {
 # $1: comma-separated currently-selected repo names
 # Prints comma-separated selected repo names to stdout.
 # Returns 1 if the user cancelled.
+# SHADER_REPOS format: URL|localname[|branch[|Short description]]
+# The 4th field (description) is shown in the UI; it falls back to the URL when absent.
 function selectShaders() {
     local _current="$1"
-    local -a _names=() _uris=() _rows=()
+    local -a _names=() _uris=() _descs=() _rows=()
     local _savedIFS="$IFS"
     IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
     IFS="$_savedIFS"
-    local _entry _uri _name _branch _checked
+    local _entry _uri _name _branch _desc _checked
     for _entry in "${_allRepos[@]}"; do
-        IFS='|' read -r _uri _name _branch <<< "$_entry"
+        IFS='|' read -r _uri _name _branch _desc <<< "$_entry"
         IFS="$_savedIFS"
         [[ -z $_name ]] && continue
+        [[ -z $_desc ]] && _desc="$_uri"
         _checked="$(repoChecklistState "$_current" "$_name")"
         _names+=("$_name")
         _uris+=("$_uri")
-        _rows+=("$_name" "$_uri" "$_checked")
+        _descs+=("$_desc")
+        _rows+=("$_name" "$_desc" "$_checked")
     done
     local -a _selected_names=()
     if [[ $_UI_BACKEND != cli ]]; then
+        # Compute adaptive box height based on terminal size.
+        local _term_lines _list_h _box_h
+        _term_lines=$(tput lines 2>/dev/null || echo 24)
+        _list_h=$(( _term_lines - 10 ))
+        (( _list_h < 5 )) && _list_h=5
+        (( _list_h > ${#_names[@]} )) && _list_h=${#_names[@]}
+        _box_h=$(( _list_h + 8 ))
         local _result
         _result=$(ui_checklist "ReShade - Shader Repositories" \
             "Select which shader repositories to install for this game. Unticking a repo removes its shaders from this game." \
-            20 90 10 "${_rows[@]}") || return 1
+            "$_box_h" 100 "$_list_h" "${_rows[@]}") || return 1
         _result=${_result//\"/}
         IFS=' ' read -ra _selected_names <<< "$_result"
     else
@@ -858,8 +812,8 @@ function selectShaders() {
         for (( _i=0; _i<${#_names[@]}; _i++ )); do
             local _def="y"
             [[ "${_rows[$(( (_i * 3) + 2 ))]}" == "OFF" ]] && _def="n"
-            printf '  [%s] %s (%s)\n     Include? [%s]: ' \
-                "$(( _i + 1 ))" "${_names[$_i]}" "${_uris[$_i]}" "$_def"
+            printf '  [%s] %s - %s\n     Include? [%s]: ' \
+                "$(( _i + 1 ))" "${_names[$_i]}" "${_descs[$_i]}" "$_def"
             read -r _ans
             [[ -z $_ans ]] && _ans="$_def"
             [[ "$_ans" =~ ^(y|Y|yes|YES)$ ]] && _selected_names+=("${_names[$_i]}")
@@ -1049,7 +1003,7 @@ function getGamePath() {
         local -a _items=()
         for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
             _statusLabel="${DETECTED_GAME_NAMES[_i]}"
-            [[ -f "$MAIN_PATH/game-state/${DETECTED_GAME_APPIDS[_i]}.state" ]] \
+            isReshadeInstalledOnDisk "$MAIN_PATH/game-state/${DETECTED_GAME_APPIDS[_i]}.state" \
                 && _statusLabel="[installed] $_statusLabel"
             _items+=("$((_i+1))" "$_statusLabel | AppID ${DETECTED_GAME_APPIDS[_i]} | ${DETECTED_GAME_EXES[_i]}")
         done
@@ -1073,7 +1027,7 @@ function getGamePath() {
     printf '%bDetected Steam games on this system:%b\n' "$_CYN$_B" "$_R"
     for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]} && _i<_maxShow; _i++)); do
         _statusLabel="${DETECTED_GAME_NAMES[_i]}"
-        [[ -f "$MAIN_PATH/game-state/${DETECTED_GAME_APPIDS[_i]}.state" ]] \
+        isReshadeInstalledOnDisk "$MAIN_PATH/game-state/${DETECTED_GAME_APPIDS[_i]}.state" \
             && _statusLabel+="  [ReShade installed]"
         printf '  %2d) %s (AppID %s)\n      exe: %s\n      -> %s\n' \
             "$((_i+1))" "$_statusLabel" "${DETECTED_GAME_APPIDS[_i]}" "${DETECTED_GAME_EXES[_i]}" "${DETECTED_GAME_PATHS[_i]}"
@@ -1173,7 +1127,9 @@ function linkD3dcompilerToWineprefix() {
 }
 
 SEPARATOR="------------------------------------------------------------------------------------------------"
-SCRIPT_VERSION="1.2.0"
+# Read version from co-located VERSION file; fall back to hard-coded string for
+# users who download just the .sh without the rest of the repository.
+SCRIPT_VERSION="$(cat "$(dirname "$(realpath -- "$0")")/VERSION" 2>/dev/null || printf '1.2.0')"
 # ANSI color helpers — used via printf '%b' throughout the script.
 _R=$'\e[0m'    # reset
 _B=$'\e[1m'    # bold
@@ -1239,7 +1195,7 @@ unset _tmp_path
 UPDATE_RESHADE=${UPDATE_RESHADE:-1}
 VULKAN_SUPPORT=${VULKAN_SUPPORT:-0}
 GLOBAL_INI=${GLOBAL_INI:-"ReShade.ini"}
-SHADER_REPOS=${SHADER_REPOS:-"https://github.com/CeeJayDK/SweetFX|sweetfx-shaders;https://github.com/martymcmodding/iMMERSE|immerse-shaders;https://github.com/BlueSkyDefender/AstrayFX|astrayfx-shaders;https://github.com/prod80/prod80-ReShade-Repository|prod80-shaders;https://github.com/crosire/reshade-shaders|reshade-shaders|slim;https://github.com/Fubaxiusz/fubax-shaders|fubax-shaders"}
+SHADER_REPOS=${SHADER_REPOS:-"https://github.com/CeeJayDK/SweetFX|sweetfx-shaders||SMAA, CAS, LumaSharpen, Technicolor, FilmGrain;https://github.com/martymcmodding/iMMERSE|immerse-shaders||SMAA, MXAO ambient occlusion, depth-aware Sharpen;https://github.com/BlueSkyDefender/AstrayFX|astrayfx-shaders||DLAA+, RadiantGI, Clarity, Smart_Sharp;https://github.com/prod80/prod80-ReShade-Repository|prod80-shaders||Full colour-grading suite, LUTs, Bloom, Sharpening;https://github.com/crosire/reshade-shaders|reshade-shaders|slim|Official built-ins: Deband, DisplayDepth, UIMask;https://github.com/Fubaxiusz/fubax-shaders|fubax-shaders||FilmicSharpen, Prism, Aspect Ratio, SimpleGrain;https://github.com/FransBouma/OtisFX|otis-fx||CinematicDOF, AdaptiveFog, Emphasize, DepthHaze;https://github.com/martymcmodding/qUINT|quintfx||Lightroom grading, SSR, MXAO, Bloom, Deband;https://github.com/LordOfLunacy/Insane-Shaders|insane-shaders||Oilify, ReVeil, ContrastStretch, BilateralComic;https://github.com/mj-ehsan/NiceGuy-Shaders|niceguy-shaders||Volumetric Fog V2, NGLighting, NiceGuy Lamps;https://github.com/Daodan317081/reshade-shaders|daodan-shaders||ColorIsolation, Comic outlines, AspectRatioComposition;https://github.com/rj200/Glamarye_Fast_Effects_for_ReShade|glamarye-fx||All-in-one FXAA + Sharpen + AO + DoF (low GPU cost);https://github.com/luluco250/FXShaders|luluco250-fx||NeoBloom, HexLensFlare, NormalMap, ArcaneBloom;https://github.com/LordKobra/CobraFX|cobra-fx||Gravity, ColorSort, RealLongExposure;https://github.com/originalnicodr/CorgiFX|corgi-fx||FreezeShot, MagnifyingGlass, AspectRatioMultiGrid;https://github.com/TheGordinho/MLUT|mlut-shaders||Multi-LUT pack: film, Instagram, cinematic presets;https://github.com/AlucardDH/dh-reshade-shaders|alucard-shaders||DH_UBER_RT (GI + AO + SSR combined), dh_anime;https://github.com/lordbean-git/reshade-shaders|lordbean-shaders||HQAA (Hybrid FXAA+SMAA), FSMAA, ASSMAA"}
 RESHADE_VERSION=${RESHADE_VERSION:-"latest"}
 RESHADE_ADDON_SUPPORT=${RESHADE_ADDON_SUPPORT:-0}
 FORCE_RESHADE_UPDATE_CHECK=${FORCE_RESHADE_UPDATE_CHECK:-0}
@@ -1443,11 +1399,9 @@ else
 fi
 # Z0016
 
-# Z0020
-
 # Z0025
-# TODO Requires changes for ReShade 5.0 ; paths and json files are different.
-# See https://github.com/asafelobotomy/reshade-steam-proton/issues/6#issuecomment-1027230967
+# Note: Vulkan support is experimental (VULKAN_SUPPORT=0 by default). The registry
+# key paths and JSON file names may differ across Wine/Proton versions.
 if [[ $VULKAN_SUPPORT == 1 ]]; then
     _useVulkan="n"
     if [[ $_UI_BACKEND != cli ]]; then
@@ -1768,15 +1722,12 @@ writeGameState "$_selectedGameKey" "$gamePath" "$wantedDll" "$exeArch" "$_select
 
 gameEnvVar="WINEDLLOVERRIDES=\"d3dcompiler_47=n;$wantedDll=n,b\""
 
-_launchOpt="$gameEnvVar %command%"
 _clipCopied=0
-if [[ -n $_selectedAppId ]] && copyToClipboard "$_launchOpt"; then
+if [[ -n $_selectedAppId ]] && copyToClipboard "$gameEnvVar %command%"; then
     _clipCopied=1
     printf '%bSteam launch option copied to clipboard.%b Paste it into Game Properties -> Launch Options.\n' \
         "$_GRN" "$_R"
 fi
-
-unset _launchOpt
 
 printf '%b%s\n  Done!\n%s%b\n' "$_GRN$_B" "$SEPARATOR" "$SEPARATOR" "$_R"
 printf '\n%bSteam launch option required for Steam launches%b (Game Properties -> Launch Options):\n  %b%s %%command%%%b\n' \

@@ -86,6 +86,17 @@ test_exe_no_exes() {
     [[ -z "$result" ]]
 }
 
+test_exe_all_utilities_returns_empty() {
+    local game_dir="$TEST_GAMES_DIR/BadOnly"
+    local result
+    mkdir -p "$game_dir"
+    touch "$game_dir/mono.exe"
+    touch "$game_dir/setup.exe"
+
+    result=$(pickBestExeInDir "$game_dir" || true)
+    [[ -z "$result" ]]
+}
+
 test_exe_name_match() {
     local game_dir="$TEST_GAMES_DIR/MyGame"
     local result
@@ -215,6 +226,41 @@ test_integration_multi_games() {
     [[ "$wh_exe" == "WH40KRT.exe" ]] && [[ "$cities_exe" == "Cities.exe" ]]
 }
 
+test_install_dir_prefers_subdir_over_root() {
+    local game_root="$TEST_GAMES_DIR/RootVsBin"
+    local result
+    mkdir -p "$game_root/bin/x64"
+    touch "$game_root/launcher.exe"
+    touch "$game_root/bin/x64/RootVsBin.exe"
+
+    result=$(resolveGameInstallDir "$game_root" "555000")
+    [[ "$result" == "$game_root/bin/x64|heuristic" ]]
+}
+
+test_install_dir_uses_custom_preset_when_present() {
+    local game_root="$TEST_GAMES_DIR/PresetGame"
+    local result
+    export GAME_DIR_PRESETS="444000|Custom/Binaries"
+    mkdir -p "$game_root/Custom/Binaries"
+    touch "$game_root/Custom/Binaries/PresetGame.exe"
+    touch "$game_root/root.exe"
+
+    result=$(resolveGameInstallDir "$game_root" "444000")
+    [[ "$result" == "$game_root/Custom/Binaries|preset:Custom/Binaries" ]]
+}
+
+test_install_dir_scan_fallback_finds_best_nested_exe() {
+    local game_root="$TEST_GAMES_DIR/ScanFallback"
+    local result
+    mkdir -p "$game_root/CustomBuild/Shipping"
+    mkdir -p "$game_root/Runtime/MonoBleedingEdge"
+    touch "$game_root/CustomBuild/Shipping/ScanFallback-Win64-Shipping.exe"
+    touch "$game_root/Runtime/MonoBleedingEdge/mono.exe"
+
+    result=$(resolveGameInstallDir "$game_root" "777000")
+    [[ "$result" == "$game_root/CustomBuild/Shipping|scan" ]]
+}
+
 # ============================================================================
 # STATE MANAGEMENT TESTS
 # ============================================================================
@@ -283,35 +329,82 @@ test_state_checklist_uses_exact_repo_match() {
     [[ "$_state" == "OFF" ]]
 }
 
-test_state_apply_launch_option_updates_localconfig() {
-    local _cfg_dir="$HOME/.local/share/Steam/userdata/12345/config"
-    local _cfg_file="$_cfg_dir/localconfig.vdf"
-    mkdir -p "$_cfg_dir"
-    cat > "$_cfg_file" <<'EOF'
-"UserLocalConfigStore"
-{
-    "Software"
-    {
-        "Valve"
-        {
-            "Steam"
-            {
-                "apps"
-                {
-                    "2186680"
-                    {
-                        "name"		"Warhammer 40,000 Rogue Trader"
-                    }
-                }
-            }
-        }
-    }
+test_state_reports_installed_when_dll_exists() {
+    local game_dir="$TEST_TEMP_DIR/installed-game"
+    mkdir -p "$game_dir"
+    : > "$game_dir/dxgi.dll"
+
+    writeGameState "123456" "$game_dir" "dxgi" "64" "alpha" "123456"
+    isReshadeInstalledOnDisk "$MAIN_PATH/game-state/123456.state"
 }
+
+test_state_rejects_stale_install_when_dll_missing() {
+    local game_dir="$TEST_TEMP_DIR/stale-game"
+    mkdir -p "$game_dir"
+
+    writeGameState "654321" "$game_dir" "dxgi" "64" "alpha" "654321"
+    ! isReshadeInstalledOnDisk "$MAIN_PATH/game-state/654321.state"
+}
+
+test_state_rejects_missing_dll_field() {
+    local state_file="$MAIN_PATH/game-state/bad-dll.state"
+    mkdir -p "$MAIN_PATH/game-state"
+    cat > "$state_file" <<'EOF'
+arch=64
+gamePath=/games/malformed
+selected_repos=alpha
+app_id=111111
 EOF
-    applyLaunchOption "2186680" 'WINEDLLOVERRIDES="d3dcompiler_47=n;dxgi=n,b" %command%' || return 1
-    grep -Fq '"LaunchOptions"' "$_cfg_file" || return 1
-    grep -Fq 'WINEDLLOVERRIDES=\"d3dcompiler_47=n;dxgi=n,b\" %command%' "$_cfg_file" || return 1
-    ! grep -Fq '%command%"d3dcompiler_47=' "$_cfg_file"
+
+    ! isReshadeInstalledOnDisk "$state_file"
+}
+
+test_state_rejects_missing_gamepath_field() {
+    local state_file="$MAIN_PATH/game-state/bad-path.state"
+    mkdir -p "$MAIN_PATH/game-state"
+    cat > "$state_file" <<'EOF'
+dll=dxgi
+arch=64
+selected_repos=alpha
+app_id=222222
+EOF
+
+    ! isReshadeInstalledOnDisk "$state_file"
+}
+
+test_state_default_repo_names_support_descriptions() {
+    local _repos
+    export SHADER_REPOS="https://example.com/a|alpha||First repo;https://example.com/b|beta|main|Second repo"
+    _repos=$(getDefaultSelectedRepos)
+    [[ "$_repos" == "alpha,beta" ]]
+}
+
+# ============================================================================
+# RELEASE METADATA TESTS
+# ============================================================================
+
+test_release_metadata_version_matches_changelog_headline() {
+    local version_file="$SCRIPT_DIR/../VERSION"
+    local changelog_file="$SCRIPT_DIR/../CHANGELOG.md"
+    local version changelog_version
+
+    version=$(tr -d '\n' < "$version_file")
+    changelog_version=$(grep -m1 '^## \[' "$changelog_file" | sed -E 's/^## \[([^]]+)\].*/\1/')
+
+    [[ -n "$version" ]]
+    [[ "$version" == "$changelog_version" ]]
+}
+
+test_release_metadata_current_version_is_dated() {
+    local version_file="$SCRIPT_DIR/../VERSION"
+    local changelog_file="$SCRIPT_DIR/../CHANGELOG.md"
+    local version first_release_line
+
+    version=$(tr -d '\n' < "$version_file")
+    first_release_line=$(grep -m1 '^## \[' "$changelog_file")
+
+    [[ "$first_release_line" == "## [$version] - "* ]]
+    [[ "$first_release_line" != *"Unreleased"* ]]
 }
 
 # ============================================================================
@@ -385,6 +478,7 @@ main() {
     run_test "UnityPlayer filtering" test_exe_unity_filter
     run_test "Setup.exe filtering" test_exe_setup_filter
     run_test "No exes handling" test_exe_no_exes
+    run_test "Utility-only dirs return empty" test_exe_all_utilities_returns_empty
     run_test "Name matching bonus" test_exe_name_match
     echo ""
 
@@ -408,6 +502,9 @@ main() {
     echo -e "${BLUE}Integration Tests${NC}"
     run_test "Full detection pipeline" test_integration_full_pipeline
     run_test "Multiple games handling" test_integration_multi_games
+    run_test "Install dir prefers bin/x64 over root" test_install_dir_prefers_subdir_over_root
+    run_test "Custom install-dir preset wins" test_install_dir_uses_custom_preset_when_present
+    run_test "Install dir scan fallback finds nested exe" test_install_dir_scan_fallback_finds_best_nested_exe
     echo ""
 
     echo -e "${BLUE}State Management Tests${NC}"
@@ -419,6 +516,16 @@ main() {
     run_test "Explicit empty repo state stays empty" test_state_explicit_empty_selected_repos_stays_empty
     run_test "Checklist marks saved repo on" test_state_checklist_marks_saved_repo_on
     run_test "Checklist uses exact repo match" test_state_checklist_uses_exact_repo_match
+    run_test "Installed state checks DLL presence" test_state_reports_installed_when_dll_exists
+    run_test "Stale state is not installed" test_state_rejects_stale_install_when_dll_missing
+    run_test "Missing dll field is rejected" test_state_rejects_missing_dll_field
+    run_test "Missing gamePath field is rejected" test_state_rejects_missing_gamepath_field
+    run_test "Default repo parsing supports descriptions" test_state_default_repo_names_support_descriptions
+    echo ""
+
+    echo -e "${BLUE}Release Metadata Tests${NC}"
+    run_test "VERSION matches changelog current release" test_release_metadata_version_matches_changelog_headline
+    run_test "Current changelog release is dated" test_release_metadata_current_version_is_dated
     echo ""
 
     echo -e "${BLUE}Shader Selection Tests${NC}"

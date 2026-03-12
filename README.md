@@ -1,9 +1,10 @@
 # reshade-linux
 
 > Download [ReShade](https://reshade.me/) and shaders, then link them into any Windows game running under Wine or Proton on Linux — with a terminal UI, automatic Steam game detection, and per-game configuration.
-
 > [!NOTE]
 > This is an independent continuation of [kevinlekiller/reshade-steam-proton](https://github.com/kevinlekiller/reshade-steam-proton). All original work and credit belongs to [kevinlekiller](https://github.com/kevinlekiller). This fork modernises the codebase, fixes active bugs, and adds substantial new features.
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---
 
@@ -60,7 +61,7 @@ chmod u+x reshade-linux.sh && ./reshade-linux.sh
 | **Performance** | Shader repo loop rewritten to remove 4+ subshells per iteration; pure-Bash path construction |
 | **HTTPS** | `RESHADE_URL_ALT` upgraded from `http://` to `https://` |
 | **D3D12** | `d3d12` added to `COMMON_OVERRIDES` (ReShade officially supports Direct3D 12) |
-| **Shader repos** | Replaced stale `martymcmodding/qUINT` with its active successor [`iMMERSE`](https://github.com/martymcmodding/iMMERSE); added [`fubax-shaders`](https://github.com/Fubaxiusz/fubax-shaders) |
+| **Shader repos** | Expanded from 6 to 18 curated repositories covering AA, AO, DoF, colour grading, LUTs, and more (OtisFX, qUINT, Insane-Shaders, NiceGuy, Glamarye, CobraFX, CorgiFX, MLUT, and others); checklist now shows human-readable descriptions instead of raw URLs; box height adapts to terminal size |
 | **D3D compiler** | `downloadD3dcompiler_47()` uses [mozilla/fxc2](https://github.com/mozilla/fxc2) (same as Winetricks) with sha256 verification instead of a 50 MB Firefox 62 installer |
 | **ShellCheck** | Zero warnings |
 

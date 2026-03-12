@@ -27,11 +27,16 @@ function pickBestExeInDir() {
         _isUtility=0
         
         # Aggressive blacklist: filter OUT known non-game executables.
-        if [[ $_lname =~ (unityplayer|unitycrash|crashhandler|easyanticheat|battleye|asp|unins|uninstall|setup|installer|vcredist|redist|eac|crashreport|benchmark|test|launcher|update|check) ]]; then
+        if [[ $_lname =~ (unityplayer|unitycrash|crashhandler|easyanticheat|battleye|asp|unins|uninstall|setup|installer|vcredist|redist|eac|crashreport|crashpad|benchmark|test|launcher|update|check|remov|error|consultant) ]]; then
             _isUtility=1
             _score=$((_score - 200))
         fi
-        
+        # Mono runtime bundled with some Linux games — not a game executable.
+        [[ $_lname =~ ^mono\. ]] && { _isUtility=1; _score=$((_score - 200)); }
+
+        # Moderate penalty: debug builds are rarely the correct launch target.
+        [[ $_lname =~ debug ]] && _score=$((_score - 80))
+
         # Strong positive: name contains parent directory name.
         [[ "$_lname" == *"${_parentDir}"* ]] && _score=$((_score + 150))
         
@@ -49,8 +54,30 @@ function pickBestExeInDir() {
             _best=$_name
         fi
     done
-    
+
+    # Don't return an exe that scored as a utility/debug — skip entry entirely.
+    [[ $_bestScore -le 0 ]] && _best=""
+
     printf '%s\n' "$_best"
+}
+
+# Score a specific executable candidate for a directory using the same heuristics
+# as pickBestExeInDir(). Higher score means a more likely real game executable.
+function scoreExeCandidate() {
+    local _dir="$1" _name="$2" _lname _parentDir _score=50
+    [[ -z $_name ]] && { printf '%s\n' "-999999"; return; }
+    _lname=${_name,,}
+    _parentDir=$(basename "$_dir" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
+
+    [[ $_lname =~ (unityplayer|unitycrash|crashhandler|easyanticheat|battleye|asp|unins|uninstall|setup|installer|vcredist|redist|eac|crashreport|crashpad|benchmark|test|launcher|update|check|remov|error|consultant) ]] && _score=$((_score - 200))
+    [[ $_lname =~ ^mono\. ]] && _score=$((_score - 200))
+    [[ $_lname =~ debug ]] && _score=$((_score - 80))
+    [[ "$_lname" == *"${_parentDir}"* ]] && _score=$((_score + 150))
+    [[ $_lname =~ (game|main|app|engine|client|server|game_?setup) ]] && _score=$((_score + 80))
+    [[ $_lname =~ (win64|x64|win32|i386|64|x86|ia32) ]] && _score=$((_score + 40))
+    [[ $_lname =~ ^[a-z][a-z0-9]?$ || $_lname == "app.exe" ]] && _score=$((_score - 30))
+
+    printf '%s\n' "$_score"
 }
 
 # Find a Steam game icon file.
@@ -100,6 +127,68 @@ function getBuiltInGameDirPreset() {
     done
 }
 
+# Resolve the preferred install directory for a Steam game root.
+# Prints "<directory>|<reason>".
+function resolveGameInstallDir() {
+    local _root="$1" _appId="$2"
+    local _preset _entry _k _v _candidate _exe _depth _score _best _bestScore=-999999 _name
+
+    if [[ -n ${GAME_DIR_PRESETS:-} ]]; then
+        local IFS=';'
+        for _entry in $GAME_DIR_PRESETS; do
+            _k=${_entry%%|*}
+            _v=${_entry#*|}
+            if [[ $_k == "$_appId" ]] && [[ -n $_v ]] && [[ -d "$_root/$_v" ]]; then
+                printf '%s|%s\n' "$_root/$_v" "preset:$_v"
+                return
+            fi
+        done
+    fi
+
+    _preset=$(getBuiltInGameDirPreset "$_appId")
+    if [[ -n $_preset ]] && [[ -d "$_root/$_preset" ]]; then
+        printf '%s|%s\n' "$_root/$_preset" "builtin:$_preset"
+        return
+    fi
+
+    for _candidate in \
+        "Binaries/Win64" "Binaries/Win32" "Binaries" \
+        "bin/x64" "bin/x86" "bin" \
+        "Win64" "Win32" "x64" "x86" "."; do
+        if [[ $_candidate == "." ]]; then
+            _candidate="$_root"
+        else
+            _candidate="$_root/$_candidate"
+        fi
+        if [[ -d $_candidate ]] && compgen -G "$_candidate/*.exe" &>/dev/null; then
+            printf '%s|%s\n' "$_candidate" "heuristic"
+            return
+        fi
+    done
+
+    while IFS='|' read -r _depth _exe; do
+        [[ -n $_exe ]] || continue
+        _score=$((200 - _depth * 12))
+        _name=${_exe##*/}
+        _name=${_name,,}
+        [[ $_name =~ (unins|uninstall|setup|installer|vcredist|redist|eac|easyanticheat|crashreport|crashpad|benchmark|remov|error|consultant) ]] && _score=$((_score - 100))
+        [[ $_name =~ ^mono\. ]] && _score=$((_score - 100))
+        [[ $_name =~ debug ]] && _score=$((_score - 50))
+        [[ $_exe == */Mono/lib/* || $_exe == */Mono/bin/* || $_exe == */MonoBleedingEdge/* ]] && _score=$((_score - 300))
+        [[ $_name =~ (shipping|game|win64|x64) ]] && _score=$((_score + 15))
+        if [[ $_score -gt $_bestScore ]]; then
+            _bestScore=$_score
+            _best=$(dirname "$_exe")
+        fi
+    done < <(find "$_root" -maxdepth 5 -type f -iname '*.exe' -printf '%d|%p\n' 2>/dev/null)
+
+    if [[ -n $_best && $_bestScore -ge 0 ]]; then
+        printf '%s|%s\n' "$_best" "scan"
+    else
+        printf '%s|%s\n' "$_root" "root"
+    fi
+}
+
 # Build a stable per-game install key.
 function buildGameInstallKey() {
     local _aid="$1" _gp="$2"
@@ -122,71 +211,14 @@ function writeGameState() {
         "$_dll" "$_arch" "$_gp" "$_repos" "$_appId" > "$_dir/$_gameKey.state"
 }
 
-function applyLaunchOption() {
-    local _aid="$1" _opt="$2"
-    [[ -z $_aid || -z $_opt ]] && return 1
-    command -v python3 &>/dev/null || return 1
-
-    local _vcfg _applied=0
-    for _vcfg in \
-        "$HOME/.local/share/Steam/userdata"/*/config/localconfig.vdf \
-        "$HOME/.var/app/com.valvesoftware.Steam/.local/share/Steam/userdata"/*/config/localconfig.vdf; do
-        [[ -f $_vcfg ]] || continue
-        python3 - "$_vcfg" "$_aid" "$_opt" <<'PYEOF' >/dev/null 2>&1
-import re
-import shutil
-import sys
-
-vdf_path, appid, launch_opt = sys.argv[1], sys.argv[2], sys.argv[3]
-
-with open(vdf_path, encoding="utf-8", errors="replace") as handle:
-    text = handle.read()
-
-apps_match = re.search(r'"[Aa]pps"\s*\{', text)
-if not apps_match:
-    sys.exit(1)
-
-appid_match = re.search(rf'"{re.escape(appid)}"\s*\{{', text[apps_match.end():])
-if not appid_match:
-    sys.exit(1)
-
-block_start = apps_match.end() + appid_match.end()
-depth = 1
-block_end = block_start
-for offset, char in enumerate(text[block_start:]):
-    if char == '{':
-        depth += 1
-    elif char == '}':
-        depth -= 1
-        if depth == 0:
-            block_end = block_start + offset
-            break
-else:
-    sys.exit(1)
-
-block = text[block_start:block_end]
-escaped_launch_opt = launch_opt.replace('\\', '\\\\').replace('"', '\\"')
-launch_line = f'"LaunchOptions"\t\t"{escaped_launch_opt}"'
-launch_re = re.compile(r'(?im)^(\s*)"LaunchOptions"\s+".*"$')
-if launch_re.search(block):
-    new_block = launch_re.sub(lambda match: f'{match.group(1)}{launch_line}', block, count=1)
-else:
-    indent_match = re.search(r'\n(\s+)"', block)
-    indent = indent_match.group(1) if indent_match else '\t' * 8
-    new_block = block.rstrip() + f'\n{indent}{launch_line}\n'
-
-new_text = text[:block_start] + new_block + text[block_end:]
-if new_text == text:
-    sys.exit(0)
-
-shutil.copy2(vdf_path, vdf_path + '.reshade.bak')
-with open(vdf_path, 'w', encoding='utf-8') as handle:
-    handle.write(new_text)
-PYEOF
-        [[ $? -eq 0 ]] && _applied=1
-    done
-
-    [[ $_applied -eq 1 ]]
+function isReshadeInstalledOnDisk() {
+    local _stateFile="$1"
+    [[ -f $_stateFile ]] || return 1
+    local _dll _gamePath
+    _dll=$(grep '^dll=' "$_stateFile" | cut -d= -f2- | head -1)
+    _gamePath=$(grep '^gamePath=' "$_stateFile" | cut -d= -f2- | head -1)
+    [[ -n $_dll && -n $_gamePath ]] || return 1
+    [[ -f "$_gamePath/$_dll.dll" ]]
 }
 
 function getDefaultSelectedRepos() {
