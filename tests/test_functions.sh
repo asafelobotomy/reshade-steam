@@ -21,10 +21,6 @@ function chooseUiBackend() {
             return 1
             ;;
     esac
-    if [[ -n ${DISPLAY:-}${WAYLAND_DISPLAY:-} ]] && command -v yad &>/dev/null; then
-        printf 'yad\n'
-        return
-    fi
     if [[ $_hasTty -eq 1 ]]; then
         if command -v whiptail &>/dev/null; then
             printf 'whiptail\n'
@@ -34,6 +30,10 @@ function chooseUiBackend() {
             printf 'dialog\n'
             return
         fi
+    fi
+    if [[ -n ${DISPLAY:-}${WAYLAND_DISPLAY:-} ]] && command -v yad &>/dev/null; then
+        printf 'yad\n'
+        return
     fi
     printf 'cli\n'
 }
@@ -247,16 +247,6 @@ function writeGameState() {
     mkdir -p "$_dir" 2>/dev/null || return
     printf 'dll=%s\narch=%s\ngamePath=%s\nselected_repos=%s\napp_id=%s\n' \
         "$_dll" "$_arch" "$_gp" "$_repos" "$_appId" > "$_dir/$_gameKey.state"
-}
-
-function isReshadeInstalledOnDisk() {
-    local _stateFile="$1"
-    [[ -f $_stateFile ]] || return 1
-    local _dll _gamePath
-    _dll=$(grep '^dll=' "$_stateFile" | cut -d= -f2- | head -1)
-    _gamePath=$(grep '^gamePath=' "$_stateFile" | cut -d= -f2- | head -1)
-    [[ -n $_dll && -n $_gamePath ]] || return 1
-    [[ -f "$_gamePath/$_dll.dll" ]]
 }
 
 function getDefaultSelectedRepos() {

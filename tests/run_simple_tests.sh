@@ -165,8 +165,22 @@ test_ui_backend_prefers_yad_in_graphical_session() {
     printf '#!/bin/sh\nexit 0\n' > "$fakebin/yad"
     chmod +x "$fakebin/yad"
 
-    result=$(PATH="$fakebin:$PATH" DISPLAY=:1 WAYLAND_DISPLAY='' chooseUiBackend 1)
+    # With TTY=0 (no terminal), yad is preferred in graphical sessions
+    result=$(PATH="$fakebin:$PATH" DISPLAY=:1 WAYLAND_DISPLAY='' chooseUiBackend 0)
     [[ "$result" == "yad" ]]
+}
+
+test_ui_backend_tty_prefers_whiptail_over_yad() {
+    local fakebin="$TEST_TEMP_DIR/fakebin"
+    local result
+    mkdir -p "$fakebin"
+    printf '#!/bin/sh\nexit 0\n' > "$fakebin/yad"
+    printf '#!/bin/sh\nexit 0\n' > "$fakebin/whiptail"
+    chmod +x "$fakebin/yad" "$fakebin/whiptail"
+
+    # With TTY=1 and both available, whiptail is preferred over yad
+    result=$(PATH="$fakebin:$PATH" DISPLAY=:1 WAYLAND_DISPLAY='' chooseUiBackend 1)
+    [[ "$result" == "whiptail" ]]
 }
 
 test_ui_backend_uses_whiptail_on_tty_without_yad() {
@@ -377,49 +391,6 @@ test_state_checklist_uses_exact_repo_match() {
     [[ "$_state" == "OFF" ]]
 }
 
-test_state_reports_installed_when_dll_exists() {
-    local game_dir="$TEST_TEMP_DIR/installed-game"
-    mkdir -p "$game_dir"
-    : > "$game_dir/dxgi.dll"
-
-    writeGameState "123456" "$game_dir" "dxgi" "64" "alpha" "123456"
-    isReshadeInstalledOnDisk "$MAIN_PATH/game-state/123456.state"
-}
-
-test_state_rejects_stale_install_when_dll_missing() {
-    local game_dir="$TEST_TEMP_DIR/stale-game"
-    mkdir -p "$game_dir"
-
-    writeGameState "654321" "$game_dir" "dxgi" "64" "alpha" "654321"
-    ! isReshadeInstalledOnDisk "$MAIN_PATH/game-state/654321.state"
-}
-
-test_state_rejects_missing_dll_field() {
-    local state_file="$MAIN_PATH/game-state/bad-dll.state"
-    mkdir -p "$MAIN_PATH/game-state"
-    cat > "$state_file" <<'EOF'
-arch=64
-gamePath=/games/malformed
-selected_repos=alpha
-app_id=111111
-EOF
-
-    ! isReshadeInstalledOnDisk "$state_file"
-}
-
-test_state_rejects_missing_gamepath_field() {
-    local state_file="$MAIN_PATH/game-state/bad-path.state"
-    mkdir -p "$MAIN_PATH/game-state"
-    cat > "$state_file" <<'EOF'
-dll=dxgi
-arch=64
-selected_repos=alpha
-app_id=222222
-EOF
-
-    ! isReshadeInstalledOnDisk "$state_file"
-}
-
 test_state_default_repo_names_support_descriptions() {
     local _repos
     export SHADER_REPOS="https://example.com/a|alpha||First repo;https://example.com/b|beta|main|Second repo"
@@ -555,7 +526,8 @@ main() {
     echo ""
 
     echo -e "${BLUE}UI Backend Tests${NC}"
-    run_test "Graphical sessions prefer YAD" test_ui_backend_prefers_yad_in_graphical_session
+    run_test "Graphical-only sessions prefer YAD" test_ui_backend_prefers_yad_in_graphical_session
+    run_test "TTY prefers whiptail over YAD" test_ui_backend_tty_prefers_whiptail_over_yad
     run_test "TTY sessions use whiptail fallback" test_ui_backend_uses_whiptail_on_tty_without_yad
     run_test "No UI tools falls back to CLI" test_ui_backend_falls_back_to_cli_without_tools
     run_test "Forced CLI override wins" test_ui_backend_honors_forced_cli_override
@@ -590,10 +562,6 @@ main() {
     run_test "Explicit empty repo state stays empty" test_state_explicit_empty_selected_repos_stays_empty
     run_test "Checklist marks saved repo on" test_state_checklist_marks_saved_repo_on
     run_test "Checklist uses exact repo match" test_state_checklist_uses_exact_repo_match
-    run_test "Installed state checks DLL presence" test_state_reports_installed_when_dll_exists
-    run_test "Stale state is not installed" test_state_rejects_stale_install_when_dll_missing
-    run_test "Missing dll field is rejected" test_state_rejects_missing_dll_field
-    run_test "Missing gamePath field is rejected" test_state_rejects_missing_gamepath_field
     run_test "Default repo parsing supports descriptions" test_state_default_repo_names_support_descriptions
     run_test "Shader repo parser keeps empty branch" test_state_shader_repo_parser_keeps_empty_branch_with_description
     echo ""

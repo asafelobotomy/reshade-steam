@@ -41,269 +41,14 @@ cat > /dev/null <<DESCRIPTION
         ./reshade-linux.sh --update-all
 DESCRIPTION
 
-function chooseUiBackend() {
-    local _hasTty="${1:-0}"
-    local _forced="${UI_BACKEND:-auto}"
-    case $_forced in
-        auto) ;;
-        yad|whiptail|dialog|cli)
-            printf '%s\n' "$_forced"
-            return
-            ;;
-        *)
-            printErr "Invalid UI_BACKEND='$_forced'. Expected one of: auto, yad, whiptail, dialog, cli."
-            ;;
-    esac
-    if [[ -n ${DISPLAY:-}${WAYLAND_DISPLAY:-} ]] && command -v yad &>/dev/null; then
-        printf 'yad\n'
-        return
-    fi
-    if [[ $_hasTty -eq 1 ]]; then
-        if command -v whiptail &>/dev/null; then
-            printf 'whiptail\n'
-            return
-        fi
-        if command -v dialog &>/dev/null; then
-            printf 'dialog\n'
-            return
-        fi
-    fi
-    printf 'cli\n'
-}
+SCRIPT_DIR="$(dirname "$(realpath -- "$0")")"
 
-function ui_yad_dims() {
-    local _height="${1:-14}" _width="${2:-70}"
-    local _pxHeight=$((_height * 24)) _pxWidth=$((_width * 8))
-    (( _pxHeight < 180 )) && _pxHeight=180
-    (( _pxWidth < 420 )) && _pxWidth=420
-    printf '%s %s\n' "$_pxHeight" "$_pxWidth"
-}
-
-function ui_capture() {
-    local _result _status
-    set +e
-    case $_UI_BACKEND in
-        whiptail)
-            _result=$("$@" 3>&1 1>&2 2>&3)
-            _status=$?
-            ;;
-        dialog)
-            _result=$("$@" 3>&1 1>/dev/tty 2>&3)
-            _status=$?
-            ;;
-        *)
-            _result=$("$@")
-            _status=$?
-            ;;
-    esac
-    set -e
-    ui_refresh_screen
-    printf '%s' "$_result"
-    return $_status
-}
-
-function ui_refresh_screen() {
-    [[ $_UI_BACKEND == cli || $_UI_BACKEND == yad ]] && return 0
-    local _ui_out="/dev/tty"
-    [[ -w $_ui_out ]] || _ui_out="/dev/stderr"
-    if command -v tput &>/dev/null; then
-        tput sgr0 >"$_ui_out" 2>/dev/null || true
-        tput cnorm >"$_ui_out" 2>/dev/null || true
-        tput clear >"$_ui_out" 2>/dev/null || printf '\033[0m\033[H\033[2J\033[3J' >"$_ui_out"
-        return 0
-    fi
-    printf '\033[0m\033[H\033[2J\033[3J' >"$_ui_out"
-}
-
-function ui_run() {
-    local _status
-    set +e
-    "$@"
-    _status=$?
-    set -e
-    ui_refresh_screen
-    return $_status
-}
-
-function ui_msgbox() {
-    local _title="$1" _text="$2" _height="${3:-14}" _width="${4:-70}"
-    local _pxHeight _pxWidth
-    case $_UI_BACKEND in
-        yad)
-            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
-            ui_run yad --info --title="$_title" --text="$_text" --height="$_pxHeight" --width="$_pxWidth" >/dev/null 2>&1
-            ;;
-        whiptail) ui_run whiptail --clear --title "$_title" --msgbox "$_text" "$_height" "$_width" ;;
-        dialog) ui_run dialog --clear --title "$_title" --msgbox "$_text" "$_height" "$_width" ;;
-        *) return 0 ;;
-    esac
-}
-
-function ui_yesno() {
-    local _title="$1" _text="$2" _height="${3:-12}" _width="${4:-70}"
-    local _pxHeight _pxWidth
-    case $_UI_BACKEND in
-        yad)
-            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
-            ui_run yad --question --title="$_title" --text="$_text" --height="$_pxHeight" --width="$_pxWidth" >/dev/null 2>&1
-            ;;
-        whiptail) ui_run whiptail --clear --title "$_title" --yesno "$_text" "$_height" "$_width" ;;
-        dialog) ui_run dialog --clear --title "$_title" --yesno "$_text" "$_height" "$_width" ;;
-        *) return 1 ;;
-    esac
-}
-
-function ui_inputbox() {
-    local _title="$1" _text="$2" _default="${3:-}" _height="${4:-14}" _width="${5:-78}"
-    local _pxHeight _pxWidth
-    case $_UI_BACKEND in
-        yad)
-            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
-            ui_capture yad --entry --title="$_title" --text="$_text" --entry-text="$_default" --height="$_pxHeight" --width="$_pxWidth" 2>/dev/null
-            ;;
-        whiptail) ui_capture whiptail --clear --title "$_title" --inputbox "$_text" "$_height" "$_width" "$_default" ;;
-        dialog) ui_capture dialog --clear --title "$_title" --inputbox "$_text" "$_height" "$_width" "$_default" ;;
-        *) return 1 ;;
-    esac
-}
-
-function ui_directorybox() {
-    local _title="$1" _startDir="${2:-$HOME}" _height="${3:-24}" _width="${4:-95}"
-    local _pxHeight _pxWidth
-    case $_UI_BACKEND in
-        yad)
-            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
-            ui_capture yad --file --directory --title="$_title" --filename="$_startDir/" --height="$_pxHeight" --width="$_pxWidth" 2>/dev/null
-            ;;
-        *)
-            ui_inputbox "$_title" "Enter a directory path:" "$_startDir/" "$_height" "$_width"
-            ;;
-    esac
-}
-
-function ui_menu() {
-    local _title="$1" _text="$2" _height="$3" _width="$4" _menuHeight="$5"
-    local _pxHeight _pxWidth
-    shift 5
-    case $_UI_BACKEND in
-        yad)
-            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
-            ui_capture yad --list --title="$_title" --text="$_text" \
-                --column="Key" --column="Choice" --print-column=1 --separator="" \
-                --height="$_pxHeight" --width="$_pxWidth" "$@" 2>/dev/null
-            ;;
-        whiptail) ui_capture whiptail --clear --title "$_title" --menu "$_text" "$_height" "$_width" "$_menuHeight" "$@" ;;
-        dialog) ui_capture dialog --clear --title "$_title" --menu "$_text" "$_height" "$_width" "$_menuHeight" "$@" ;;
-        *) return 1 ;;
-    esac
-}
-
-function ui_radiolist() {
-    local _title="$1" _text="$2" _height="$3" _width="$4" _listHeight="$5"
-    local _pxHeight _pxWidth _tag _label _state _yadState
-    local -a _rows=()
-    shift 5
-    case $_UI_BACKEND in
-        yad)
-            while [[ $# -ge 3 ]]; do
-                _tag="$1"; _label="$2"; _state="$3"; shift 3
-                [[ $_state == ON ]] && _yadState=TRUE || _yadState=FALSE
-                _rows+=("$_yadState" "$_tag" "$_label")
-            done
-            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
-            ui_capture yad --list --radiolist --title="$_title" --text="$_text" \
-                --column="" --column="Key" --column="Choice" --hide-column=2 \
-                --print-column=2 --separator="" --height="$_pxHeight" --width="$_pxWidth" \
-                "${_rows[@]}" 2>/dev/null
-            ;;
-        whiptail) ui_capture whiptail --clear --title "$_title" --radiolist "$_text" "$_height" "$_width" "$_listHeight" "$@" ;;
-        dialog) ui_capture dialog --clear --title "$_title" --radiolist "$_text" "$_height" "$_width" "$_listHeight" "$@" ;;
-        *) return 1 ;;
-    esac
-}
-
-function ui_checklist() {
-    local _title="$1" _text="$2" _height="$3" _width="$4" _listHeight="$5"
-    local _pxHeight _pxWidth _tag _label _state _yadState
-    local -a _rows=()
-    shift 5
-    case $_UI_BACKEND in
-        yad)
-            while [[ $# -ge 3 ]]; do
-                _tag="$1"; _label="$2"; _state="$3"; shift 3
-                [[ $_state == ON ]] && _yadState=TRUE || _yadState=FALSE
-                _rows+=("$_yadState" "$_tag" "$_label")
-            done
-            read -r _pxHeight _pxWidth < <(ui_yad_dims "$_height" "$_width")
-            ui_capture yad --list --checklist --title="$_title" --text="$_text" \
-                --column="" --column="Key" --column="Choice" --hide-column=2 \
-                --print-column=2 --separator=" " --height="$_pxHeight" --width="$_pxWidth" \
-                "${_rows[@]}" 2>/dev/null
-            ;;
-        whiptail) ui_capture whiptail --clear --title "$_title" --checklist "$_text" "$_height" "$_width" "$_listHeight" "$@" ;;
-        dialog) ui_capture dialog --clear --title "$_title" --checklist "$_text" "$_height" "$_width" "$_listHeight" "$@" ;;
-        *) return 1 ;;
-    esac
-}
-
-function ui_infobox() {
-    local _title="$1" _text="$2" _height="${3:-10}" _width="${4:-70}"
-    case $_UI_BACKEND in
-        whiptail) whiptail --title "$_title" --infobox "$_text" "$_height" "$_width" ;;
-        dialog) dialog --title "$_title" --infobox "$_text" "$_height" "$_width" ;;
-        *) return 0 ;;
-    esac
-}
-
-# Check user input
-# $1 is valid values to display to user
-# $2 is regex
-function checkStdin() {
-    while true; do
-        read -rp "$(printf '%b%s%b' "$_YLW" "$1" "$_R")" userInput
-        if [[ $userInput =~ $2 ]]; then
-            break
-        fi
-    done
-    echo "$userInput"
-}
-
-# Print a colored section header.
-# $1 is the message
-function printStep() {
-    printf '%b==> %s%b\n' "$_CYN$_B" "$1" "$_R"
-}
-
-# Print a fatal error message to stderr and exit.
-function printErr() {
-    printf '%b[ERROR] %s%b\n' "$_RED$_B" "$*" "$_R" >&2
-    [[ ${_UI_BACKEND:-cli} == yad ]] && yad --error --title="ReShade - Error" --text="$*" --width=520 >/dev/null 2>&1 || true
-    exit 1
-}
-
-# Run a command while showing a lightweight TUI infobox when available.
-# $1 = dialog label text; remaining args = command + arguments to execute.
-# The command runs in the current shell so functions and cd side-effects work normally.
-function withProgress() {
-    local text="$1"; shift
-    if [[ $_UI_BACKEND == yad ]]; then
-        (while true; do printf '1\n'; sleep 0.1; done) \
-            | yad --progress --pulsate --no-buttons --auto-close \
-                  --title="ReShade" --text="$text" --width=520 >/dev/null 2>&1 &
-        local _yadPid=$!
-        "$@"
-        local _ret=$?
-        kill "$_yadPid" 2>/dev/null || true
-        wait "$_yadPid" 2>/dev/null || true
-        return $_ret
-    fi
-    if [[ $_UI_BACKEND != cli ]]; then
-        ui_infobox "ReShade" "$text" 10 70
-        sleep 0.1
-        ui_refresh_screen
-    fi
-    "$@"
-}
+. "$SCRIPT_DIR/lib/logging.sh" || { printf 'Failed to source %s\n' "$SCRIPT_DIR/lib/logging.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib/ui.sh" || { printf 'Failed to source %s\n' "$SCRIPT_DIR/lib/ui.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib/utils.sh" || { printf 'Failed to source %s\n' "$SCRIPT_DIR/lib/utils.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib/config.sh" || { printf 'Failed to source %s\n' "$SCRIPT_DIR/lib/config.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib/state.sh" || { printf 'Failed to source %s\n' "$SCRIPT_DIR/lib/state.sh" >&2; exit 1; }
+. "$SCRIPT_DIR/lib/shaders.sh" || { printf 'Failed to source %s\n' "$SCRIPT_DIR/lib/shaders.sh" >&2; exit 1; }
 
 # Return all detected Steam library steamapps directories (one per line).
 function listSteamAppsDirs() {
@@ -727,231 +472,6 @@ print(f"dll={best_dll}")
 PYEOF
 }
 
-# Build a stable per-game install key.
-# Steam games use the AppID directly; non-Steam games use a path hash.
-# $1=appId  $2=gamePath
-function buildGameInstallKey() {
-    local _aid="$1" _gp="$2"
-    if [[ -n $_aid ]]; then
-        printf '%s\n' "$_aid"
-        return
-    fi
-    [[ -z $_gp ]] && return 1
-    printf 'path-%s\n' "$(printf '%s' "$_gp" | sha256sum | cut -c1-16)"
-}
-
-# Write a per-game state file recording installation details.
-# $1=gameKey  $2=gamePath  $3=dll  $4=arch  $5=selected_repos  $6=appId(optional)
-# State files live in $MAIN_PATH/game-state/<gameKey>.state
-function writeGameState() {
-    local _gameKey="$1" _gp="$2" _dll="$3" _arch="$4" _repos="$5" _appId="${6:-}"
-    [[ -z $_gameKey ]] && return
-    local _dir="$MAIN_PATH/game-state"
-    mkdir -p "$_dir" 2>/dev/null || return
-    printf 'dll=%s\narch=%s\ngamePath=%s\nselected_repos=%s\napp_id=%s\n' \
-        "$_dll" "$_arch" "$_gp" "$_repos" "$_appId" > "$_dir/$_gameKey.state"
-}
-
-# Returns 0 if ReShade is actually installed for a given game key.
-# Checks both the state file exists AND the DLL it recorded is present on disk.
-# This prevents false "installed" positives when a game was reinstalled or DLLs
-# were manually removed while the state file was left behind.
-# $1: path to the .state file
-function isReshadeInstalledOnDisk() {
-    local _stateFile="$1"
-    [[ -f $_stateFile ]] || return 1
-    local _dll _gamePath
-    _dll=$(grep '^dll=' "$_stateFile" | cut -d= -f2- | head -1)
-    _gamePath=$(grep '^gamePath=' "$_stateFile" | cut -d= -f2- | head -1)
-    [[ -n $_dll && -n $_gamePath ]] || return 1
-    [[ -f "$_gamePath/$_dll.dll" ]]
-}
-
-function copyToClipboard() {
-    local _text="$1"
-    if [[ -n ${WAYLAND_DISPLAY:-} ]] && command -v wl-copy &>/dev/null; then
-        printf '%s' "$_text" | wl-copy >/dev/null 2>&1
-        return $?
-    fi
-    if [[ -n ${DISPLAY:-} ]] && command -v xclip &>/dev/null; then
-        printf '%s' "$_text" | xclip -selection clipboard >/dev/null 2>&1
-        return $?
-    fi
-    if [[ -n ${DISPLAY:-} ]] && command -v xsel &>/dev/null; then
-        printf '%s' "$_text" | xsel --clipboard --input >/dev/null 2>&1
-        return $?
-    fi
-    return 1
-}
-
-# Parse a SHADER_REPOS entry into shared variables.
-# Format: URL|localname[|branch[|description]]
-function parseShaderRepoEntry() {
-    local _entry="$1"
-    local _savedIFS="$IFS"
-    IFS='|' read -r _shaderRepoUri _shaderRepoName _shaderRepoBranch _shaderRepoDesc <<< "$_entry"
-    IFS="$_savedIFS"
-    [[ -z $_shaderRepoDesc ]] && _shaderRepoDesc="$_shaderRepoUri"
-}
-
-# Return a comma-separated list of all configured shader repo names.
-function getDefaultSelectedRepos() {
-    local -a _names=()
-    local _savedIFS="$IFS" _entry
-    IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
-    IFS="$_savedIFS"
-    for _entry in "${_allRepos[@]}"; do
-        parseShaderRepoEntry "$_entry"
-        [[ -n $_shaderRepoName ]] && _names+=("$_shaderRepoName")
-    done
-    local IFS=','
-    printf '%s\n' "${_names[*]}"
-}
-
-# Read selected shader repos from a state file.
-# Missing fields default to all repos for backward compatibility.
-# An explicit empty field means no repos selected.
-function readSelectedReposFromState() {
-    local _stateFile="$1"
-    [[ -f $_stateFile ]] || { getDefaultSelectedRepos; return; }
-    if grep -q '^selected_repos=' "$_stateFile" 2>/dev/null; then
-        grep '^selected_repos=' "$_stateFile" | cut -d= -f2- | head -1
-        return
-    fi
-    getDefaultSelectedRepos
-}
-
-function repoIsSelected() {
-    local _selectedRepos="$1" _repoName="$2" _entry
-    local _savedIFS="$IFS"
-    IFS=',' read -ra _repoList <<< "$_selectedRepos"
-    IFS="$_savedIFS"
-    for _entry in "${_repoList[@]}"; do
-        [[ $_entry == "$_repoName" ]] && return 0
-    done
-    return 1
-}
-
-function repoChecklistState() {
-    local _selectedRepos="$1" _repoName="$2"
-    repoIsSelected "$_selectedRepos" "$_repoName" && printf 'ON\n' || printf 'OFF\n'
-}
-
-# Build (or rebuild) a per-game shader directory containing only the selected repos.
-# Creates $MAIN_PATH/game-shaders/<gameKey>/Merged/{Shaders,Textures}/.
-# $1: game key  $2: comma-separated selected repo names
-function buildGameShaderDir() {
-    local _gameKey="$1" _selectedRepos="$2"
-    [[ -z $_gameKey ]] && return 1
-    local _gameShaderDir="$MAIN_PATH/game-shaders/$_gameKey"
-    rm -rf "$_gameShaderDir"
-    mkdir -p "$_gameShaderDir/Merged/Shaders" "$_gameShaderDir/Merged/Textures"
-    local _outBase="$_gameShaderDir/Merged" _entry
-    IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
-    for _entry in "${_allRepos[@]}"; do
-        parseShaderRepoEntry "$_entry"
-        [[ -z $_shaderRepoName ]] && continue
-        [[ ",$_selectedRepos," != *",$_shaderRepoName,"* ]] && continue
-        [[ ! -d "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" ]] && continue
-        mergeShaderDirsTo "ReShade_shaders" "$_shaderRepoName" "$_outBase"
-    done
-    if [[ -d "$MAIN_PATH/External_shaders" ]]; then
-        mergeShaderDirsTo "External_shaders" "" "$_outBase"
-        # Link loose files in External_shaders root.
-        cd "$MAIN_PATH/External_shaders" || return
-        local _file
-        for _file in *; do
-            [[ ! -f $_file || -L "$_outBase/Shaders/$_file" ]] && continue
-            ln -s "$(realpath "$MAIN_PATH/External_shaders/$_file")" "$_outBase/Shaders/"
-        done
-    fi
-}
-
-# Create a per-game ReShade.ini if one does not already exist.
-# Default configs use relative shader paths so every game stays self-contained.
-# $1: game path
-function ensureGameIni() {
-    local _gamePath="$1"
-    [[ $GLOBAL_INI == 0 ]] && return 0
-    local _target="$_gamePath/ReShade.ini"
-    [[ -f $_target ]] && return 0
-    if [[ $GLOBAL_INI == ReShade.ini ]]; then
-        cat > "$_target" <<'EOF'
-[GENERAL]
-EffectSearchPaths=.\ReShade_shaders\Merged\Shaders
-TextureSearchPaths=.\ReShade_shaders\Merged\Textures
-EOF
-        return 0
-    fi
-    [[ -f "$MAIN_PATH/$GLOBAL_INI" ]] || return 1
-    cp "$MAIN_PATH/$GLOBAL_INI" "$_target"
-}
-
-# Copy a preset into the game directory if requested and not already present.
-# The copy stays per-game and can be customized independently afterwards.
-# $1: game path
-function ensureGamePreset() {
-    local _gamePath="$1"
-    [[ -z $LINK_PRESET ]] && return 0
-    [[ -f "$MAIN_PATH/$LINK_PRESET" ]] || return 0
-    [[ -f "$_gamePath/$LINK_PRESET" ]] && return 0
-    cp "$MAIN_PATH/$LINK_PRESET" "$_gamePath/$LINK_PRESET"
-}
-
-# Show a shader repository selection dialog.
-# $1: comma-separated currently-selected repo names
-# Prints comma-separated selected repo names to stdout.
-# Returns 1 if the user cancelled.
-# SHADER_REPOS format: URL|localname[|branch[|Short description]]
-# The 4th field (description) is shown in the UI; it falls back to the URL when absent.
-function selectShaders() {
-    local _current="$1"
-    local -a _names=() _uris=() _descs=() _rows=()
-    local _savedIFS="$IFS"
-    IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
-    IFS="$_savedIFS"
-    local _entry _checked
-    for _entry in "${_allRepos[@]}"; do
-        parseShaderRepoEntry "$_entry"
-        [[ -z $_shaderRepoName ]] && continue
-        _checked="$(repoChecklistState "$_current" "$_shaderRepoName")"
-        _names+=("$_shaderRepoName")
-        _uris+=("$_shaderRepoUri")
-        _descs+=("$_shaderRepoDesc")
-        _rows+=("$_shaderRepoName" "$_shaderRepoDesc" "$_checked")
-    done
-    local -a _selected_names=()
-    if [[ $_UI_BACKEND != cli ]]; then
-        # Compute adaptive box height based on terminal size.
-        local _term_lines _list_h _box_h
-        _term_lines=$(tput lines 2>/dev/null || echo 24)
-        _list_h=$(( _term_lines - 10 ))
-        (( _list_h < 5 )) && _list_h=5
-        (( _list_h > ${#_names[@]} )) && _list_h=${#_names[@]}
-        _box_h=$(( _list_h + 8 ))
-        local _result
-        _result=$(ui_checklist "ReShade - Shader Repositories" \
-            "Select which shader repositories to install for this game. Unticking a repo removes its shaders from this game." \
-            "$_box_h" 100 "$_list_h" "${_rows[@]}") || return 1
-        _result=${_result//\"/}
-        IFS=' ' read -ra _selected_names <<< "$_result"
-    else
-        printf '%bSelect shader repositories to install for this game:%b\n' "$_CYN" "$_R"
-        local _i _ans
-        for (( _i=0; _i<${#_names[@]}; _i++ )); do
-            local _def="y"
-            [[ "${_rows[$(( (_i * 3) + 2 ))]}" == "OFF" ]] && _def="n"
-            printf '  [%s] %s - %s\n     Include? [%s]: ' \
-                "$(( _i + 1 ))" "${_names[$_i]}" "${_descs[$_i]}" "$_def"
-            read -r _ans
-            [[ -z $_ans ]] && _ans="$_def"
-            [[ "$_ans" =~ ^(y|Y|yes|YES)$ ]] && _selected_names+=("${_names[$_i]}")
-        done
-    fi
-    local IFS=','
-    echo "${_selected_names[*]}"
-}
-
 # Fill auto-detected Steam game arrays.
 function detectSteamGames() {
     DETECTED_GAME_NAMES=()
@@ -964,6 +484,7 @@ function detectSteamGames() {
     local _idx _oldIdx _newScore _oldScore _aiCand
     local -a _aiCands
     local -A _bestIdxByPath=()
+    local -A _bestIdxByAppId=()
 
     # Parse Steam's appinfo.vdf once — authoritative Windows launch exe for every game.
     local -A _appinfoExes=()
@@ -990,6 +511,7 @@ function detectSteamGames() {
 
             # Normalize common ACF parsing artifacts (CRLF + surrounding spaces).
             _appId=${_appId//$'\r'/}
+            _appId="${_appId#"${_appId%%[![:space:]]*}"}" ; _appId="${_appId%"${_appId##*[![:space:]]}"}"
             _name=${_name//$'\r'/}
             _installDir=${_installDir//$'\r'/}
             _type=${_type//$'\r'/}
@@ -1039,6 +561,26 @@ function detectSteamGames() {
             [[ -z $_exe ]] && continue
             _icon=$(findSteamIconPath "$_steamRoot" "$_appId" 2>/dev/null || echo "")
 
+            # Deduplicate by AppID first (same game in multiple Steam libraries).
+            if [[ -n ${_bestIdxByAppId["$_appId"]+x} ]]; then
+                _oldIdx=${_bestIdxByAppId["$_appId"]}
+                _newScore=$(scoreExeCandidate "$_path" "$_exe")
+                _oldScore=$(scoreExeCandidate "${DETECTED_GAME_PATHS[_oldIdx]}" "${DETECTED_GAME_EXES[_oldIdx]}")
+                if (( _newScore > _oldScore )); then
+                    local _oldPathKey="${DETECTED_GAME_PATHS[_oldIdx],,}"
+                    DETECTED_GAME_NAMES[_oldIdx]="$_name"
+                    DETECTED_GAME_APPIDS[_oldIdx]="$_appId"
+                    DETECTED_GAME_PATHS[_oldIdx]="$_path"
+                    DETECTED_GAME_EXES[_oldIdx]="$_exe"
+                    DETECTED_GAME_ICONS[_oldIdx]="$_icon"
+                    DETECTED_GAME_REASONS[_oldIdx]="$_reason"
+                    # Update path lookup: remove old path key, add new one
+                    [[ -n ${_bestIdxByPath["$_oldPathKey"]+x} ]] && unset "_bestIdxByPath[$_oldPathKey]"
+                    _bestIdxByPath["$_dedupeKey"]=$_oldIdx
+                fi
+                continue
+            fi
+
             # Deduplicate by canonical install path and keep the best exe candidate.
             if [[ -n ${_bestIdxByPath["$_dedupeKey"]+x} ]]; then
                 _oldIdx=${_bestIdxByPath["$_dedupeKey"]}
@@ -1063,6 +605,7 @@ function detectSteamGames() {
             DETECTED_GAME_REASONS+=("$_reason")
             _idx=$((${#DETECTED_GAME_PATHS[@]} - 1))
             _bestIdxByPath["$_dedupeKey"]=$_idx
+            _bestIdxByAppId["$_appId"]=$_idx
         done
     done < <(listSteamAppsDirs)
 }
@@ -1126,18 +669,34 @@ function getGamePath() {
     fi
 
     if [[ $_UI_BACKEND != cli ]]; then
-        local _pick _i _statusLabel
+        local _pick _i
         local -a _items=()
-        for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
-            _statusLabel="${DETECTED_GAME_NAMES[_i]}"
-            isReshadeInstalledOnDisk "$MAIN_PATH/game-state/${DETECTED_GAME_APPIDS[_i]}.state" \
-                && _statusLabel="[installed] $_statusLabel"
-            _items+=("$((_i+1))" "$_statusLabel | AppID ${DETECTED_GAME_APPIDS[_i]} | ${DETECTED_GAME_EXES[_i]}")
-        done
-        _items+=("m" "Manual path...")
-        _pick=$(ui_menu "ReShade - Select Game" \
-            "Detected installed Steam games. Choose one, or select manual path." \
-            24 110 16 "${_items[@]}") || exit 0
+        if [[ $_UI_BACKEND == yad ]]; then
+            # Multi-column layout: hidden key | Game | App ID | Executable
+            for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
+                _items+=("$((_i+1))" \
+                    "$(_pango_escape "${DETECTED_GAME_NAMES[_i]}")" \
+                    "${DETECTED_GAME_APPIDS[_i]}" \
+                    "${DETECTED_GAME_EXES[_i]}")
+            done
+            _items+=("m" "Enter path manually..." "" "")
+            local _pxHeight _pxWidth
+            read -r _pxHeight _pxWidth < <(ui_yad_dims 26 130)
+            _pick=$(ui_capture yad --list \
+                --title="ReShade - Select Game" \
+                --text="Detected installed Steam games. Double-click to select, or choose Manual path." \
+                --column="Key" --column="Game" --column="App ID" --column="Executable" \
+                --hide-column=1 --print-column=1 --separator="" \
+                --height="$_pxHeight" --width="$_pxWidth" "${_items[@]}" 2>/dev/null) || exit 0
+        else
+            for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
+                _items+=("$((_i+1))" "${DETECTED_GAME_NAMES[_i]} (${DETECTED_GAME_APPIDS[_i]}) — ${DETECTED_GAME_EXES[_i]}")
+            done
+            _items+=("m" "Manual path...")
+            _pick=$(ui_menu "ReShade - Select Game" \
+                "Detected installed Steam games. Choose one, or select manual path." \
+                24 110 16 "${_items[@]}") || exit 0
+        fi
         if [[ $_pick == "m" ]]; then
             _selectedAppId=""
             promptGamePathManual
@@ -1154,8 +713,6 @@ function getGamePath() {
     printf '%bDetected Steam games on this system:%b\n' "$_CYN$_B" "$_R"
     for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]} && _i<_maxShow; _i++)); do
         _statusLabel="${DETECTED_GAME_NAMES[_i]}"
-        isReshadeInstalledOnDisk "$MAIN_PATH/game-state/${DETECTED_GAME_APPIDS[_i]}.state" \
-            && _statusLabel+="  [ReShade installed]"
         printf '  %2d) %s (AppID %s)\n      exe: %s\n      -> %s\n' \
             "$((_i+1))" "$_statusLabel" "${DETECTED_GAME_APPIDS[_i]}" "${DETECTED_GAME_EXES[_i]}" "${DETECTED_GAME_PATHS[_i]}"
     done
@@ -1178,16 +735,6 @@ function getGamePath() {
             return
         fi
     done
-}
-
-# Remove / create temporary directory.
-function createTempDir() {
-    tmpDir=$(mktemp -d)
-    cd "$tmpDir" || printErr "Failed to create temp directory."
-}
-function removeTempDir() {
-    cd "$MAIN_PATH" || exit
-    [[ -d $tmpDir ]] && rm -rf "$tmpDir"
 }
 
 # Downloads d3dcompiler_47.dll files.
@@ -1256,77 +803,8 @@ function linkD3dcompilerToWineprefix() {
 SEPARATOR="------------------------------------------------------------------------------------------------"
 # Read version from co-located VERSION file; fall back to hard-coded string for
 # users who download just the .sh without the rest of the repository.
-SCRIPT_VERSION="$(cat "$(dirname "$(realpath -- "$0")")/VERSION" 2>/dev/null || printf '1.2.0')"
-# ANSI color helpers — used via printf '%b' throughout the script.
-_R=$'\e[0m'    # reset
-_B=$'\e[1m'    # bold
-_RED=$'\e[31m' # red   (errors)
-_GRN=$'\e[32m' # green (success / info)
-_YLW=$'\e[33m' # yellow (warnings / prompts)
-_CYN=$'\e[36m' # cyan  (section headers)
-_has_tty=0
-[[ -t 0 && -t 1 ]] && _has_tty=1
-_UI_BACKEND=$(chooseUiBackend "$_has_tty")
-# Curl progress flag: visible progress bar in CLI; silent in TUI (dialog boxes provide context already).
-_CURL_PROG=(--progress-bar)
-[[ $_UI_BACKEND != cli ]] && _CURL_PROG=(--silent)
-COMMON_OVERRIDES="d3d8 d3d9 d3d11 d3d12 ddraw dinput8 dxgi opengl32"
-REQUIRED_EXECUTABLES=(7z curl file git grep sed sha256sum)
-XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
-UI_BACKEND=${UI_BACKEND:-auto}
-# Auto-detect Flatpak vs native Steam when MAIN_PATH is not explicitly set by user.
-if [[ -z ${MAIN_PATH+x} ]]; then
-    _flatpak_data="$HOME/.var/app/com.valvesoftware.Steam/.local/share"
-    _flatpak_ok=0; _native_ok=0
-    [[ -d "$_flatpak_data/Steam" ]] && _flatpak_ok=1
-    [[ -d "$XDG_DATA_HOME/Steam" ]] && _native_ok=1
-    if [[ $_flatpak_ok -eq 1 && $_native_ok -eq 0 ]]; then
-        MAIN_PATH="$_flatpak_data/reshade"
-        printf '%bDetected Flatpak Steam — using Flatpak data dir for MAIN_PATH.%b\n' "$_CYN" "$_R"
-    elif [[ $_flatpak_ok -eq 1 && $_native_ok -eq 1 ]]; then
-        if [[ $_UI_BACKEND != cli ]]; then
-            _fpChoice=$(ui_radiolist "ReShade" \
-                "Both Flatpak and native Steam installs were detected. Which installation should ReShade target?" \
-                14 78 2 \
-                flatpak "Flatpak Steam -> $_flatpak_data/reshade" ON \
-                native "Native Steam -> $XDG_DATA_HOME/reshade" OFF) || exit 0
-            [[ $_fpChoice == flatpak ]] \
-                && MAIN_PATH="$_flatpak_data/reshade" \
-                || MAIN_PATH="$XDG_DATA_HOME/reshade"
-        else
-            printf '%bBoth Flatpak and native Steam installs detected.%b\n' "$_YLW$_B" "$_R"
-            printf '  1) Flatpak Steam  → %s/reshade\n' "$_flatpak_data"
-            printf '  2) Native Steam   → %s/reshade\n' "$XDG_DATA_HOME"
-            if [[ $(checkStdin "Which installation? (1/2): " "^(1|2)$") == "1" ]]; then
-                MAIN_PATH="$_flatpak_data/reshade"
-            else
-                MAIN_PATH="$XDG_DATA_HOME/reshade"
-            fi
-        fi
-    else
-        MAIN_PATH="$XDG_DATA_HOME/reshade"
-    fi
-    unset _flatpak_data _flatpak_ok _native_ok
-fi
-RESHADE_PATH="$MAIN_PATH/reshade"
-# Strip the leading /home/$USER/ then convert forward slashes to double-backslashes
-# for use in Wine registry paths — done with pure bash, no external commands.
-_tmp_path="${MAIN_PATH#/home/"$USER"/}"
-WINE_MAIN_PATH="${_tmp_path//\//\\\\}"
-unset _tmp_path
-UPDATE_RESHADE=${UPDATE_RESHADE:-1}
-VULKAN_SUPPORT=${VULKAN_SUPPORT:-0}
-GLOBAL_INI=${GLOBAL_INI:-"ReShade.ini"}
-SHADER_REPOS=${SHADER_REPOS:-"https://github.com/CeeJayDK/SweetFX|sweetfx-shaders||SMAA, CAS, LumaSharpen, Technicolor, FilmGrain;https://github.com/martymcmodding/iMMERSE|immerse-shaders||SMAA, MXAO ambient occlusion, depth-aware Sharpen;https://github.com/BlueSkyDefender/AstrayFX|astrayfx-shaders||DLAA+, RadiantGI, Clarity, Smart_Sharp;https://github.com/prod80/prod80-ReShade-Repository|prod80-shaders||Full colour-grading suite, LUTs, Bloom, Sharpening;https://github.com/crosire/reshade-shaders|reshade-shaders|slim|Official built-ins: Deband, DisplayDepth, UIMask;https://github.com/Fubaxiusz/fubax-shaders|fubax-shaders||FilmicSharpen, Prism, Aspect Ratio, SimpleGrain;https://github.com/FransBouma/OtisFX|otis-fx||CinematicDOF, AdaptiveFog, Emphasize, DepthHaze;https://github.com/martymcmodding/qUINT|quintfx||Lightroom grading, SSR, MXAO, Bloom, Deband;https://github.com/LordOfLunacy/Insane-Shaders|insane-shaders||Oilify, ReVeil, ContrastStretch, BilateralComic;https://github.com/mj-ehsan/NiceGuy-Shaders|niceguy-shaders||Volumetric Fog V2, NGLighting, NiceGuy Lamps;https://github.com/Daodan317081/reshade-shaders|daodan-shaders||ColorIsolation, Comic outlines, AspectRatioComposition;https://github.com/rj200/Glamarye_Fast_Effects_for_ReShade|glamarye-fx||All-in-one FXAA + Sharpen + AO + DoF (low GPU cost);https://github.com/luluco250/FXShaders|luluco250-fx||NeoBloom, HexLensFlare, NormalMap, ArcaneBloom;https://github.com/LordKobra/CobraFX|cobra-fx||Gravity, ColorSort, RealLongExposure;https://github.com/originalnicodr/CorgiFX|corgi-fx||FreezeShot, MagnifyingGlass, AspectRatioMultiGrid;https://github.com/TheGordinho/MLUT|mlut-shaders||Multi-LUT pack: film, Instagram, cinematic presets;https://github.com/AlucardDH/dh-reshade-shaders|alucard-shaders||DH_UBER_RT (GI + AO + SSR combined), dh_anime;https://github.com/lordbean-git/reshade-shaders|lordbean-shaders||HQAA (Hybrid FXAA+SMAA), FSMAA, ASSMAA"}
-RESHADE_VERSION=${RESHADE_VERSION:-"latest"}
-RESHADE_ADDON_SUPPORT=${RESHADE_ADDON_SUPPORT:-0}
-FORCE_RESHADE_UPDATE_CHECK=${FORCE_RESHADE_UPDATE_CHECK:-0}
-RESHADE_URL="https://reshade.me"
-RESHADE_URL_ALT="https://static.reshade.me"
-WINEPREFIX=${WINEPREFIX:-""}
-# Built-in install-dir presets for known titles where launch executables
-# are often not in the game root. User GAME_DIR_PRESETS overrides these.
-BUILTIN_GAME_DIR_PRESETS="1091500|bin/x64;292030|bin/x64;275850|Binaries;1245620|Game;306130|The Elder Scrolls Online/game/client;2623190|OblivionRemastered/Binaries/Win64"
+SCRIPT_VERSION="$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || printf '1.2.0')"
+init_runtime_config
 
 # Parse command-line arguments.
 _BATCH_UPDATE=0
@@ -1404,69 +882,12 @@ printf '%b%s\n  ReShade installer/updater for Linux games using Wine or Proton.\
     "$_CYN$_B" "$SEPARATOR" "$SCRIPT_VERSION" "$SEPARATOR" "$_R"
 
 # Z0010
-# Like linkShaderFiles but writes into an arbitrary output base directory.
-# $1: source directory (full path)
-# $2: subdirectory name (Shaders or Textures[/subpath])
-# $3: output base directory — files go into $3/$2/
-function linkShaderFilesTo() {
-    [[ ! -d $1 ]] && return
-    local _inDir="$1" _subDir="$2" _outBase="$3"
-    cd "$_inDir" || return
-    local _outDir="$_outBase/$_subDir"
-    mkdir -p "$_outDir"
-    local _outDirReal
-    _outDirReal="$(realpath "$_outDir")"
-    for file in *; do
-        [[ ! -f $file ]] && continue
-        [[ -L "$_outDirReal/$file" ]] && continue
-        ln -s "$(realpath "$_inDir/$file")" "$_outDirReal/"
-    done
-}
-# Like mergeShaderDirs but writes into an arbitrary output base directory.
-# $1: ReShade_shaders | External_shaders
-# $2: repo name (only for ReShade_shaders)
-# $3: output base directory (Shaders/ and Textures/ will be created inside it)
-function mergeShaderDirsTo() {
-    [[ $1 != ReShade_shaders && $1 != External_shaders ]] && return
-    local _outBase="$3"
-    local dirPath
-    for dirName in Shaders Textures; do
-        [[ $1 == "ReShade_shaders" ]] \
-            && dirPath=$(find "$MAIN_PATH/$1/$2" ! -path . -type d -name "$dirName") \
-            || dirPath="$MAIN_PATH/$1/$dirName"
-        linkShaderFilesTo "$dirPath" "$dirName" "$_outBase"
-        while IFS= read -rd '' anyDir; do
-            linkShaderFilesTo "$dirPath/$anyDir" "$dirName/$anyDir" "$_outBase"
-        done < <(find . ! -path . -type d -print0)
-    done
-}
-if [[ -n $SHADER_REPOS ]]; then
-    printStep "Checking for shader updates"
-    IFS=';' read -ra _shaderRepos <<< "$SHADER_REPOS"
-    for _repoEntry in "${_shaderRepos[@]}"; do
-        parseShaderRepoEntry "$_repoEntry"
-        if [[ -d "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" ]]; then
-            if [[ $UPDATE_RESHADE -eq 1 ]]; then
-                cd "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" || continue
-                printf '%bUpdating shader repo:%b %s\n' "$_GRN" "$_R" "$_shaderRepoUri"
-                withProgress "Updating shader repo:\n<tt>$_shaderRepoUri</tt>" \
-                    git pull --ff-only \
-                    || printf '%bCould not update shader repo: %s%b\n' "$_YLW" "$_shaderRepoUri" "$_R"
-            fi
-        else
-            cd "$MAIN_PATH/ReShade_shaders" || exit
-            branchArgs=()
-            [[ -n $_shaderRepoBranch ]] && branchArgs=(--branch "$_shaderRepoBranch" --single-branch)
-            printf '%bCloning shader repo:%b %s\n' "$_GRN" "$_R" "$_shaderRepoUri"
-            withProgress "Cloning shader repo:\n<tt>$_shaderRepoUri</tt>" \
-                git clone --depth 1 "${branchArgs[@]}" "$_shaderRepoUri" "$_shaderRepoName" \
-                || printf '%bCould not clone shader repo: %s%b\n' "$_YLW" "$_shaderRepoUri" "$_R"
-        fi
-    done
-    if [[ -d "$MAIN_PATH/External_shaders" ]]; then
-        printStep "Checking for external shader updates"
-        :
-    fi
+# Shader repos are now cloned on-demand when the user selects them,
+# not automatically on startup. This is done in ensureSelectedShaderRepos()
+# after the user selects which repos to use for their game.
+if [[ -d "$MAIN_PATH/External_shaders" ]]; then
+    printStep "Checking for external shader updates"
+    :
 fi
 echo "$SEPARATOR"
 # Z0010
@@ -1672,6 +1093,8 @@ if [[ $_BATCH_UPDATE -eq 1 ]]; then
         fi
         [[ -L "$_gp/d3dcompiler_47.dll" ]] && unlink "$_gp/d3dcompiler_47.dll"
         ln -sf "$(realpath "$MAIN_PATH/d3dcompiler_47.dll.$_arch")" "$_gp/d3dcompiler_47.dll" 2>/dev/null
+        # Update selected shader repos in batch mode
+        [[ -n $_repos ]] && ensureSelectedShaderRepos "$_repos"
         [[ -L "$_gp/ReShade_shaders" ]] && unlink "$_gp/ReShade_shaders"
         buildGameShaderDir "$_gameKey" "$_repos"
         ln -sf "$(realpath "$MAIN_PATH/game-shaders/$_gameKey")" "$_gp/ReShade_shaders"
@@ -1764,11 +1187,56 @@ fi
 
 # Z0037 Shader selection — let the user pick which repos to link for this game.
 _selectedRepos=""
+_shaderDownloadSuccess=0
 if [[ -n $SHADER_REPOS ]]; then
     _prevRepos=$(readSelectedReposFromState "$_stateFile")
     _selectedRepos=$(selectShaders "$_prevRepos") || exit 0
     if [[ -n $_selectedRepos ]]; then
         printf '%bSelected shader repos:%b %s\n' "$_GRN" "$_R" "$_selectedRepos"
+        # Clone and update only the selected shader repos with error handling
+        if ensureSelectedShaderRepos "$_selectedRepos"; then
+            _shaderDownloadSuccess=1
+            # Show success confirmation dialog
+            if [[ $_UI_BACKEND != cli ]]; then
+                ui_msgbox "ReShade - Shaders" "Shaders have been successfully downloaded and will be linked to your game." 10 60
+            else
+                printf '%b✓ Shaders downloaded successfully.%b\n' "$_GRN" "$_R"
+            fi
+        else
+            # Show error dialog with failed repos and retry option
+            printf '%b⚠ Some shader repositories failed to download:%b %s\n' "$_YLW" "$_R" "$_failedRepos"
+            if [[ $_UI_BACKEND != cli ]]; then
+                ui_yesno "ReShade - Download Error" "Failed to download: $_failedRepos\n\nRetry downloading these repositories?" 10 70
+                if [[ $? -eq 0 ]]; then
+                    printf '%bRetrying failed repositories...%b\n' "$_CYN" "$_R"
+                    ensureSelectedShaderRepos "$_failedRepos"
+                    if [[ $? -eq 0 ]]; then
+                        _shaderDownloadSuccess=1
+                        ui_msgbox "ReShade - Shaders" "Shaders have been successfully downloaded and will be linked to your game." 10 60
+                    else
+                        printf '%b⚠ Still unable to download some repositories. Continuing without those shaders.%b\n' "$_YLW" "$_R"
+                        ui_msgbox "ReShade - Download Error" "Some shader repositories could not be downloaded. Installation will continue without them." 10 60
+                    fi
+                else
+                    printf '%bSkipping failed repositories. Continuing with successful downloads.%b\n' "$_YLW" "$_R"
+                fi
+            else
+                printf '%bRetry downloading failed repositories? (y/n): %b' "$_YLW" "$_R"
+                read -r _retry
+                if [[ $_retry =~ ^(y|Y|yes|YES)$ ]]; then
+                    printf '%bRetrying failed repositories...%b\n' "$_CYN" "$_R"
+                    ensureSelectedShaderRepos "$_failedRepos"
+                    if [[ $? -eq 0 ]]; then
+                        _shaderDownloadSuccess=1
+                        printf '%b✓ Shaders downloaded successfully.%b\n' "$_GRN" "$_R"
+                    else
+                        printf '%b⚠ Still unable to download some repositories. Continuing without those shaders.%b\n' "$_YLW" "$_R"
+                    fi
+                else
+                    printf '%bSkipping failed repositories. Continuing with successful downloads.%b\n' "$_YLW" "$_R"
+                fi
+            fi
+        fi
     else
         printf '%bNo shader repos selected — ReShade will have no shaders linked.%b\n' "$_YLW" "$_R"
     fi
@@ -1850,8 +1318,13 @@ if [[ -n $_selectedAppId ]] && copyToClipboard "$gameEnvVar %command%"; then
 fi
 
 printf '%b%s\n  Done!\n%s%b\n' "$_GRN$_B" "$SEPARATOR" "$SEPARATOR" "$_R"
+
+# Print configuration summary (Steam launcher command and first-run setup)
 printf '\n%bSteam launch option required for Steam launches%b (Game Properties -> Launch Options):\n  %b%s %%command%%%b\n' \
     "$_GRN$_B" "$_R" "$_CYN$_B" "$gameEnvVar" "$_R"
+if [[ $_clipCopied -eq 1 ]]; then
+    printf '%b(Copied to clipboard)%b\n' "$_GRN" "$_R"
+fi
 printf '%bNon-Steam — run the game with:%b\n  %b%s%b\n' \
     "$_GRN$_B" "$_R" "$_CYN$_B" "$gameEnvVar" "$_R"
 printf '\n%bReShade first-run setup:%b\n' "$_GRN$_B" "$_R"
@@ -1865,18 +1338,11 @@ if [[ -z $WINEPREFIX ]]; then
     printf '  %bWINEPREFIX="%s/.local/share/Steam/steamapps/compatdata/<AppID>/pfx" %s%b\n' \
         "$_CYN" "$HOME" "$0" "$_R"
 fi
-
 if [[ $_UI_BACKEND != cli ]]; then
-    _summary="ReShade installation complete."
-    _summary+="\n\nSteam launch option required for Steam launches:\n$gameEnvVar %command%"
+    _summary="ReShade installation complete!\n\nNext steps:\n\n1. Configure Steam launch option in Game Properties:\n$gameEnvVar %command%"
     if [[ $_clipCopied -eq 1 ]]; then
-        _summary+="\n\nThe Steam launch option was copied to the clipboard."
-    else
-        _summary+="\n\nCopy and paste it into Game Properties -> Launch Options."
+        _summary+="\n\n(Already copied to clipboard)"
     fi
-    _summary+="\n\nNon-Steam:\n$gameEnvVar\n\nReShade first-run setup:\nOpen Settings, point shader/texture paths to:\n$gamePath/ReShade_shaders/Merged/\nThen click Reload."
-    if [[ -z $WINEPREFIX ]]; then
-        _summary+="\n\nNote: ReShade 6.5+ also requires d3dcompiler_47.dll inside the game's Wine/Proton prefix."
-    fi
-    ui_msgbox "ReShade - Done" "$_summary" 20 78
+    _summary+="\n\n2. Open the ReShade overlay in-game (usually Ctrl+Shift+Backspace)\n\n3. Go to Settings tab and verify shader paths point to:\n$gamePath/ReShade_shaders/Merged/\n\n4. Click Home tab and Reload"
+    ui_msgbox "ReShade - Installation Complete" "$_summary" 18 78
 fi

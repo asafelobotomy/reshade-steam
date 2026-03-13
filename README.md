@@ -97,7 +97,7 @@ VARIABLE=value ./reshade-linux.sh
 | `UPDATE_RESHADE` | `1` | Set to `0` to skip checking for new ReShade/shader versions. |
 | `RESHADE_VERSION` | `latest` | Pin to a specific ReShade version, e.g. `4.9.1`. |
 | `RESHADE_ADDON_SUPPORT` | `0` | Set to `1` to use the addon-enabled build (single-player use only). |
-| `SHADER_REPOS` | *(6 repos)* | Semicolon-separated list of `URI\|local-name[\|branch[\|description]]` shader repositories. |
+| `SHADER_REPOS` | *(18 repos)* | Semicolon-separated list of `URI\|local-name[\|branch[\|description]]` shader repositories. |
 | `GAME_DIR_PRESETS` | *(empty)* | Per-game exe subdirectory overrides, e.g. `12345\|Binaries/Win64`. |
 | `GLOBAL_INI` | `ReShade.ini` | Template used to create a per-game `ReShade.ini` if the game does not already have one. Set to `0` to let ReShade create it on first launch. |
 | `LINK_PRESET` | *(empty)* | Preset `.ini` file in `MAIN_PATH` to copy into a game's directory on first install. |
