@@ -30,8 +30,9 @@ setup_test_env() {
     
     # Set MAIN_PATH to an isolated temp location for state/shader tests
     export MAIN_PATH="$TEST_TEMP_DIR/reshade"
+    export RESHADE_PATH="$MAIN_PATH/reshade"
     mkdir -p "$MAIN_PATH/ReShade_shaders" "$MAIN_PATH/External_shaders" \
-             "$MAIN_PATH/game-state" "$MAIN_PATH/game-shaders"
+             "$MAIN_PATH/game-state" "$MAIN_PATH/game-shaders" "$RESHADE_PATH"
 }
 
 # Clean up test environment
@@ -158,15 +159,18 @@ create_mock_shader_repo() {
 # This function extracts and loads only the functions we need to test
 load_functions_from_script() {
     local script_path="${1:-.}"
+    local script_file
     
     # Find the reshade-linux.sh script
     if [[ ! -f "$script_path/reshade-linux.sh" ]]; then
         script_path="$(dirname "${BASH_SOURCE[0]}")/.."
     fi
+    script_file="$script_path/reshade-linux.sh"
     
-    if [[ -f "$script_path/reshade-linux.sh" ]]; then
+    if [[ -f "$script_file" ]]; then
         # Source the script but suppress version check and update messages
-        SKIP_RESHADE_CHECK=1 source "$script_path" 2>/dev/null || true
+        # shellcheck source=../reshade-linux.sh
+        SKIP_RESHADE_CHECK=1 source "$script_file" 2>/dev/null || true
     fi
 }
 

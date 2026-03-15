@@ -25,6 +25,12 @@ function writeGameState() {
         "$_dll" "$_arch" "$_gp" "$_repos" "$_appId" > "$_dir/$_gameKey.state"
 }
 
+function readGameStateField() {
+    local _stateFile="$1" _field="$2"
+    [[ -f $_stateFile ]] || return 1
+    grep "^${_field}=" "$_stateFile" | cut -d= -f2- | head -1
+}
+
 # Read selected shader repos from a state file.
 # Missing fields default to all repos for backward compatibility.
 # An explicit empty field means no repos selected.
@@ -52,4 +58,35 @@ function repoIsSelected() {
 function repoChecklistState() {
     local _selectedRepos="$1" _repoName="$2"
     repoIsSelected "$_selectedRepos" "$_repoName" && printf 'ON\n' || printf 'OFF\n'
+}
+
+function isKnownDllOverride() {
+    local _dll="$1" _candidate
+    [[ -n $_dll ]] || return 1
+    for _candidate in $COMMON_OVERRIDES; do
+        [[ $_candidate == "$_dll" ]] && return 0
+    done
+    return 1
+}
+
+function gameHasTrackedInstall() {
+    local _appId="$1" _gamePath="$2"
+    local _gameKey _stateFile _dll
+
+    _gameKey=$(buildGameInstallKey "$_appId" "$_gamePath") || return 1
+    _stateFile="$MAIN_PATH/game-state/$_gameKey.state"
+    [[ -f $_stateFile ]] || return 1
+
+    _dll=$(readGameStateField "$_stateFile" dll) || return 1
+    isKnownDllOverride "$_dll" || return 1
+    [[ -e "$_gamePath/$_dll.dll" || -L "$_gamePath/$_dll.dll" ]]
+}
+
+function formatDetectedGameLabel() {
+    local _gameName="$1" _appId="$2" _gamePath="$3"
+    if gameHasTrackedInstall "$_appId" "$_gamePath"; then
+        printf '✔ %s\n' "$_gameName"
+        return
+    fi
+    printf '%s\n' "$_gameName"
 }

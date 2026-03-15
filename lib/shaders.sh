@@ -28,6 +28,30 @@ function getDefaultSelectedRepos() {
     printf '%s\n' "${_names[*]}"
 }
 
+function getAvailableSelectedRepos() {
+    local _selectedRepos="$1"
+    local -a _available=()
+    local -A _seen=()
+    local _savedIFS="$IFS" _entry
+
+    [[ -z $_selectedRepos ]] && return 0
+
+    IFS=';' read -ra _allRepos <<< "$SHADER_REPOS"
+    IFS="$_savedIFS"
+    for _entry in "${_allRepos[@]}"; do
+        parseShaderRepoEntry "$_entry"
+        [[ -z $_shaderRepoName ]] && continue
+        [[ -n ${_seen["$_shaderRepoName"]+x} ]] && continue
+        _seen["$_shaderRepoName"]=1
+        [[ ",$_selectedRepos," != *",$_shaderRepoName,"* ]] && continue
+        [[ ! -d "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" ]] && continue
+        _available+=("$_shaderRepoName")
+    done
+
+    local IFS=','
+    printf '%s\n' "${_available[*]}"
+}
+
 # Build (or rebuild) a per-game shader directory containing only the selected repos.
 # Creates $MAIN_PATH/game-shaders/<gameKey>/Merged/{Shaders,Textures}/.
 # $1: game key  $2: comma-separated selected repo names
@@ -198,13 +222,13 @@ function selectShaders() {
         _result=${_result//\"/}
         IFS=' ' read -ra _selected_names <<< "$_result"
     else
-        printf '%bSelect shader repositories to install for this game:%b\n' "$_CYN" "$_R"
+        printf '%bSelect shader repositories to install for this game:%b\n' "$_CYN" "$_R" >&2
         local _i _ans
         for (( _i=0; _i<${#_names[@]}; _i++ )); do
             local _def="y"
             [[ "${_rows[$(( (_i * 3) + 2 ))]}" == "OFF" ]] && _def="n"
             printf '  [%s] %s - %s\n     Include? [%s]: ' \
-                "$(( _i + 1 ))" "${_names[$_i]}" "${_descs[$_i]}" "$_def"
+                "$(( _i + 1 ))" "${_names[$_i]}" "${_descs[$_i]}" "$_def" >&2
             read -r _ans
             [[ -z $_ans ]] && _ans="$_def"
             [[ "$_ans" =~ ^(y|Y|yes|YES)$ ]] && _selected_names+=("${_names[$_i]}")

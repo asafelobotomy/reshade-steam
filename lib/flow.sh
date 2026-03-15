@@ -13,6 +13,7 @@ function checkRequiredExecutables() {
                 file) _pkg="file" ;;
                 git)  _pkg="git" ;;
                 grep) _pkg="grep" ;;
+                python3) _pkg="python3" ;;
                 sed)  _pkg="sed" ;;
                 sha256sum) _pkg="coreutils" ;;
                 *) _pkg="$REQUIRED_EXECUTABLE" ;;
@@ -60,9 +61,8 @@ function printInstallerBanner() {
 }
 
 function printShaderUpdateStatus() {
-    if [[ -d "$MAIN_PATH/External_shaders" ]]; then
+    if compgen -G "$MAIN_PATH/External_shaders/*" &>/dev/null; then
         printStep "Checking for external shader updates"
-        :
     fi
     echo "$SEPARATOR"
 }
@@ -116,81 +116,29 @@ function ensureRequestedReshadeVersion() {
     fi
 }
 
-function maybeHandleVulkanFlow() {
-    local _useVulkan _startDir _prefixConfirmed _archPick _archChoice _vulkanAction _vPick
+function resolveBatchUpdateState() {
+    local _stateFile="$1"
+    local _dll _arch _gp _appId
 
-    [[ $VULKAN_SUPPORT == 1 ]] || return
+    _dll=$(readGameStateField "$_stateFile" dll)
+    _arch=$(readGameStateField "$_stateFile" arch)
+    _gp=$(readGameStateField "$_stateFile" gamePath)
+    _appId=$(readGameStateField "$_stateFile" app_id)
 
-    _useVulkan="n"
-    if [[ $_UI_BACKEND != cli ]]; then
-        ui_yesno "ReShade" "Does this game use the Vulkan API?" 10 60 && _useVulkan="y"
-    else
-        echo "Does the game use the Vulkan API?"
-        _useVulkan=$(checkStdin "(y/n): " "^(y|n)$") || exit 1
-    fi
-    [[ $_useVulkan == "y" ]] || return
+    [[ $_arch =~ ^(32|64)$ ]] || return 1
+    isKnownDllOverride "$_dll" || return 1
+    [[ -n $_gp ]] || return 1
 
-    if [[ $_UI_BACKEND != cli ]]; then
-        _startDir="$HOME/.local/share/Steam/steamapps/compatdata"
-        [[ ! -d $_startDir ]] && _startDir="$HOME"
-        while true; do
-            WINEPREFIX=$(ui_directorybox "ReShade - Select WINEPREFIX folder" "$_startDir") || exit 0
-            [[ -z $WINEPREFIX ]] && exit 0
-            WINEPREFIX="${WINEPREFIX/#\~/$HOME}"
-            WINEPREFIX=$(realpath "$WINEPREFIX" 2>/dev/null)
-            [[ -d $WINEPREFIX ]] && break
-            ui_msgbox "ReShade" "Path does not exist:\n$WINEPREFIX" 12 70
-        done
-    else
-        printf '%bSupply the WINEPREFIX path for the game.%b\n' "$_CYN" "$_R"
-        printf '%b(Control+C to exit)%b\n' "$_YLW" "$_R"
-        while true; do
-            read -rp "$(printf '%bWINEPREFIX path: %b' "$_YLW" "$_R")" WINEPREFIX
-            WINEPREFIX="${WINEPREFIX/#\~/$HOME}"
-            WINEPREFIX=$(realpath "$WINEPREFIX" 2>/dev/null)
-            if [[ -z $WINEPREFIX || ! -d $WINEPREFIX ]]; then
-                printf '%bIncorrect or empty path supplied. You supplied "%s".%b\n' "$_YLW" "$WINEPREFIX" "$_R"
-                continue
-            fi
-            printf '%bIs this path correct? "%s"%b\n' "$_YLW" "$WINEPREFIX" "$_R"
-            _prefixConfirmed=$(checkStdin "(y/n) " "^(y|n)$") || exit 1
-            [[ $_prefixConfirmed == "y" ]] && break
-        done
-    fi
+    _gp=$(realpath "$_gp" 2>/dev/null || printf '%s' "$_gp")
+    [[ -d $_gp ]] || return 1
 
-    if [[ $_UI_BACKEND != cli ]]; then
-        _archPick=$(ui_radiolist "ReShade" "Select the game's EXE architecture:" \
-            12 60 2 64 "64-bit" ON 32 "32-bit" OFF) || exit 0
-        [[ $_archPick == 32 ]] && exeArch=32 || exeArch=64
-    else
-        echo "Specify if the game's EXE file architecture is 32 or 64 bits:"
-        _archChoice=$(checkStdin "(32/64) " "^(32|64)$") || exit 1
-        [[ $_archChoice == 64 ]] && exeArch=64 || exeArch=32
-    fi
-    export WINEPREFIX="$WINEPREFIX"
-
-    _vulkanAction="i"
-    if [[ $_UI_BACKEND != cli ]]; then
-        _vPick=$(ui_radiolist "ReShade" "Install or uninstall Vulkan ReShade?" \
-            12 60 2 install "Install" ON uninstall "Uninstall" OFF) || exit 0
-        [[ $_vPick == uninstall ]] && _vulkanAction="u"
-    else
-        echo "Do you want to (i)nstall or (u)ninstall ReShade?"
-        _vulkanAction=$(checkStdin "(i/u): " "^(i|u)$") || exit 1
-    fi
-
-    if [[ $_vulkanAction == "i" ]]; then
-        wine reg ADD HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers /d 0 /t REG_DWORD /v "Z:\\home\\$USER\\$WINE_MAIN_PATH\\reshade\\$RESHADE_VERSION\\ReShade$exeArch.json" -f /reg:"$exeArch" \
-            && echo "Done." || echo "An error has occurred."
-    else
-        wine reg DELETE HKLM\\SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers -f /reg:"$exeArch" \
-            && echo "Done." || echo "An error has occurred."
-    fi
-    exit 0
+    printf 'dll=%s\narch=%s\ngamePath=%s\napp_id=%s\n' "$_dll" "$_arch" "$_gp" "$_appId"
 }
 
 function maybeHandleDirectXUninstall() {
     local _action _pick LINKS link sysDir
+
+    [[ $_BATCH_UPDATE -eq 1 ]] && return
 
     _action="i"
     if [[ $_UI_BACKEND != cli ]]; then
@@ -205,7 +153,7 @@ function maybeHandleDirectXUninstall() {
 
     getGamePath
     printf '%bUnlinking ReShade files from:%b %s\n' "$_GRN" "$_R" "$gamePath"
-    LINKS="${COMMON_OVERRIDES// /.dll }.dll ReShade.ini ReShade32.json ReShade64.json d3dcompiler_47.dll Shaders Textures ReShade_shaders"
+    LINKS="${COMMON_OVERRIDES// /.dll }.dll ReShade.ini d3dcompiler_47.dll Shaders Textures ReShade_shaders"
     [[ -n $LINK_PRESET ]] && LINKS="$LINKS $LINK_PRESET"
     for link in $LINKS; do
         if [[ -L $gamePath/$link ]]; then
@@ -213,6 +161,11 @@ function maybeHandleDirectXUninstall() {
             unlink "$gamePath/$link"
         fi
     done
+    # ReShade_shaders may be a real directory (manual install / old format).
+    if [[ -d $gamePath/ReShade_shaders && ! -L $gamePath/ReShade_shaders ]]; then
+        echo "Removing real directory \"$gamePath/ReShade_shaders\"."
+        rm -rf "$gamePath/ReShade_shaders"
+    fi
     if [[ $DELETE_RESHADE_FILES == 1 ]]; then
         echo "Deleting ReShade.log and ReShadePreset.ini"
         rm -f "$gamePath/ReShade.log" "$gamePath/ReShadePreset.ini"
@@ -236,7 +189,8 @@ function maybeHandleDirectXUninstall() {
 }
 
 function maybeHandleBatchUpdate() {
-    local _stateDir _ok _fail _sf _gameKey _dll _arch _gp _repos _appId
+    local _stateDir _ok _fail _sf _gameKey _dll _arch _gp _requestedRepos _effectiveRepos _appId
+    local _resolvedState _reshadeDllPath _compilerDllPath
 
     [[ $_BATCH_UPDATE -eq 1 ]] || return
 
@@ -250,33 +204,54 @@ function maybeHandleBatchUpdate() {
     for _sf in "$_stateDir"/*.state; do
         _gameKey="${_sf##*/}"
         _gameKey="${_gameKey%.state}"
-        _dll=$(grep '^dll=' "$_sf" | cut -d= -f2 | head -1)
-        _arch=$(grep '^arch=' "$_sf" | cut -d= -f2 | head -1)
-        _gp=$(grep '^gamePath=' "$_sf" | cut -d= -f2- | head -1)
-        _repos=$(readSelectedReposFromState "$_sf")
-        _appId=$(grep '^app_id=' "$_sf" | cut -d= -f2- | head -1)
-        if [[ ! -d $_gp ]]; then
-            printf '%bSkipping game %s — directory not found: %s%b\n' \
-                "$_YLW" "$_gameKey" "$_gp" "$_R"
+        _requestedRepos=$(readSelectedReposFromState "$_sf")
+        if ! _resolvedState=$(resolveBatchUpdateState "$_sf"); then
+            printf '%bSkipping game %s — invalid or stale state file: %s%b\n' \
+                "$_YLW" "$_gameKey" "$_sf" "$_R"
             (( _fail++ ))
             continue
         fi
+
+        _dll=$(grep '^dll=' <<< "$_resolvedState" | cut -d= -f2)
+        _arch=$(grep '^arch=' <<< "$_resolvedState" | cut -d= -f2)
+        _gp=$(grep '^gamePath=' <<< "$_resolvedState" | cut -d= -f2-)
+        _appId=$(grep '^app_id=' <<< "$_resolvedState" | cut -d= -f2-)
+
+        if [[ $_arch == 64 ]]; then
+            _reshadeDllPath="$RESHADE_PATH/$RESHADE_VERSION/ReShade64.dll"
+        else
+            _reshadeDllPath="$RESHADE_PATH/$RESHADE_VERSION/ReShade32.dll"
+        fi
+        _compilerDllPath="$MAIN_PATH/d3dcompiler_47.dll.$_arch"
+        if [[ ! -f $_reshadeDllPath || ! -f $_compilerDllPath ]]; then
+            printf '%bSkipping game %s — required ReShade files for %s-bit update are missing.%b\n' \
+                "$_YLW" "$_gameKey" "$_arch" "$_R"
+            (( _fail++ ))
+            continue
+        fi
+
         printf '%bUpdating %s — %s (%s-bit, %s.dll)%b\n' \
             "$_GRN" "${_appId:-$_gameKey}" "$_gp" "$_arch" "$_dll" "$_R"
         [[ -L "$_gp/$_dll.dll" ]] && unlink "$_gp/$_dll.dll"
-        if [[ $_arch == 64 ]]; then
-            ln -sf "$(realpath "$RESHADE_PATH/$RESHADE_VERSION/ReShade64.dll")" "$_gp/$_dll.dll"
-        else
-            ln -sf "$(realpath "$RESHADE_PATH/$RESHADE_VERSION/ReShade32.dll")" "$_gp/$_dll.dll"
-        fi
+        ln -sf "$(realpath "$_reshadeDllPath")" "$_gp/$_dll.dll"
         [[ -L "$_gp/d3dcompiler_47.dll" ]] && unlink "$_gp/d3dcompiler_47.dll"
-        ln -sf "$(realpath "$MAIN_PATH/d3dcompiler_47.dll.$_arch")" "$_gp/d3dcompiler_47.dll" 2>/dev/null
-        [[ -n $_repos ]] && ensureSelectedShaderRepos "$_repos"
-        [[ -L "$_gp/ReShade_shaders" ]] && unlink "$_gp/ReShade_shaders"
-        buildGameShaderDir "$_gameKey" "$_repos"
+        ln -sf "$(realpath "$_compilerDllPath")" "$_gp/d3dcompiler_47.dll"
+        [[ -n $_requestedRepos ]] && ensureSelectedShaderRepos "$_requestedRepos"
+        _effectiveRepos=$(getAvailableSelectedRepos "$_requestedRepos")
+        if [[ $_effectiveRepos != "$_requestedRepos" ]]; then
+            printf '%bBatch update for %s will link available shader repos only:%b %s\n' \
+                "$_YLW" "${_appId:-$_gameKey}" "$_R" "${_effectiveRepos:-<none>}"
+        fi
+        if [[ -L "$_gp/ReShade_shaders" ]]; then
+            unlink "$_gp/ReShade_shaders"
+        elif [[ -d "$_gp/ReShade_shaders" ]]; then
+            rm -rf "$_gp/ReShade_shaders"
+        fi
+        buildGameShaderDir "$_gameKey" "$_effectiveRepos"
         ln -sf "$(realpath "$MAIN_PATH/game-shaders/$_gameKey")" "$_gp/ReShade_shaders"
         ensureGameIni "$_gp"
         ensureGamePreset "$_gp"
+        writeGameState "$_gameKey" "$_gp" "$_dll" "$_arch" "$_effectiveRepos" "$_appId"
         (( _ok++ ))
     done
     printf '%bBatch update complete: %d game(s) updated, %d skipped.%b\n' \
@@ -323,7 +298,11 @@ function linkGameFilesForInstall() {
     fi
     [[ -L $gamePath/d3dcompiler_47.dll ]] && unlink "$gamePath/d3dcompiler_47.dll"
     ln -sf "$(realpath "$MAIN_PATH/d3dcompiler_47.dll.$exeArch")" "$gamePath/d3dcompiler_47.dll"
-    [[ -L $gamePath/ReShade_shaders ]] && unlink "$gamePath/ReShade_shaders"
+    if [[ -L $gamePath/ReShade_shaders ]]; then
+        unlink "$gamePath/ReShade_shaders"
+    elif [[ -d $gamePath/ReShade_shaders ]]; then
+        rm -rf "$gamePath/ReShade_shaders"
+    fi
     printf '%bBuilding per-game shader directory...%b\n' "$_GRN" "$_R"
     buildGameShaderDir "$_selectedGameKey" "$_selectedRepos"
     ln -sf "$(realpath "$MAIN_PATH/game-shaders/$_selectedGameKey")" "$gamePath/ReShade_shaders"

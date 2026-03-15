@@ -63,13 +63,14 @@ function getGamePath() {
     fi
 
     if [[ $_UI_BACKEND != cli ]]; then
-        local _pick _i
+        local _pick _i _displayName
         local -a _items=()
         if [[ $_UI_BACKEND == yad ]]; then
             # Multi-column layout: hidden key | Game | App ID | Executable
             for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
+                _displayName=$(formatDetectedGameLabel "${DETECTED_GAME_NAMES[_i]}" "${DETECTED_GAME_APPIDS[_i]}" "${DETECTED_GAME_PATHS[_i]}")
                 _items+=("$((_i+1))" \
-                    "$(_pango_escape "${DETECTED_GAME_NAMES[_i]}")" \
+                    "$(_pango_escape "$_displayName")" \
                     "${DETECTED_GAME_APPIDS[_i]}" \
                     "${DETECTED_GAME_EXES[_i]}")
             done
@@ -84,7 +85,8 @@ function getGamePath() {
                 --height="$_pxHeight" --width="$_pxWidth" "${_items[@]}" 2>/dev/null) || exit 0
         else
             for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]}; _i++)); do
-                _items+=("$((_i+1))" "${DETECTED_GAME_NAMES[_i]} (${DETECTED_GAME_APPIDS[_i]}) — ${DETECTED_GAME_EXES[_i]}")
+                _displayName=$(formatDetectedGameLabel "${DETECTED_GAME_NAMES[_i]}" "${DETECTED_GAME_APPIDS[_i]}" "${DETECTED_GAME_PATHS[_i]}")
+                _items+=("$((_i+1))" "$_displayName (${DETECTED_GAME_APPIDS[_i]}) — ${DETECTED_GAME_EXES[_i]}")
             done
             _items+=("m" "Manual path...")
             _pick=$(ui_menu "ReShade - Select Game" \
@@ -106,7 +108,7 @@ function getGamePath() {
     local _i _choice _maxShow=25 _statusLabel
     printf '%bDetected Steam games on this system:%b\n' "$_CYN$_B" "$_R"
     for ((_i=0; _i<${#DETECTED_GAME_PATHS[@]} && _i<_maxShow; _i++)); do
-        _statusLabel="${DETECTED_GAME_NAMES[_i]}"
+        _statusLabel=$(formatDetectedGameLabel "${DETECTED_GAME_NAMES[_i]}" "${DETECTED_GAME_APPIDS[_i]}" "${DETECTED_GAME_PATHS[_i]}")
         printf '  %2d) %s (AppID %s)\n      exe: %s\n      -> %s\n' \
             "$((_i+1))" "$_statusLabel" "${DETECTED_GAME_APPIDS[_i]}" "${DETECTED_GAME_EXES[_i]}" "${DETECTED_GAME_PATHS[_i]}"
     done

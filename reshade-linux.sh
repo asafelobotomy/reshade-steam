@@ -22,8 +22,7 @@ cat > /dev/null <<DESCRIPTION
     for games using Wine or Proton on Linux. Re-running the script updates the installed files.
 
     Requirements:
-        grep, 7z, curl, git, file, sed, sha256sum
-        wine : only needed for Vulkan registry setup
+        grep, 7z, curl, git, file, python3, sed, sha256sum
         yad : optional graphical UI when a desktop session is available
         whiptail or dialog : optional terminal UI; otherwise plain CLI prompts are used
 
@@ -81,7 +80,6 @@ checkRequiredExecutables
 # Z0015 Download / update latest ReShade version.
 # Z0016 Download version of ReShade specified by user.
 # Z0020 Process GLOBAL_INI.
-# Z0025 Vulkan install / uninstall.
 # Z0030 DirectX / OpenGL uninstall.
 # Z0035 DirectX / OpenGL find correct ReShade DLL.
 # Z0040 Download d3dcompiler_47.dll.
@@ -91,12 +89,6 @@ initializeMainWorkspace
 printInstallerBanner
 printShaderUpdateStatus
 ensureRequestedReshadeVersion
-
-# Z0025
-# Note: Vulkan support is experimental (VULKAN_SUPPORT=0 by default). The registry
-# key paths and JSON file names may differ across Wine/Proton versions.
-maybeHandleVulkanFlow
-# Z0025
 
 # Z0030
 maybeHandleDirectXUninstall
@@ -186,12 +178,14 @@ fi
 
 # Z0037 Shader selection — let the user pick which repos to link for this game.
 _selectedRepos=""
+_requestedSelectedRepos=""
 _shaderDownloadSuccess=0
 _failedRepos=""
 if [[ -n $SHADER_REPOS ]]; then
     _prevRepos=$(readSelectedReposFromState "$_stateFile")
     _selectedRepos=$(selectShaders "$_prevRepos") || exit 0
     if [[ -n $_selectedRepos ]]; then
+        _requestedSelectedRepos="$_selectedRepos"
         printf '%bSelected shader repos:%b %s\n' "$_GRN" "$_R" "$_selectedRepos"
         # Clone and update only the selected shader repos with error handling
         if ensureSelectedShaderRepos "$_selectedRepos"; then
@@ -234,6 +228,10 @@ if [[ -n $SHADER_REPOS ]]; then
                 fi
             fi
         fi
+        _selectedRepos=$(getAvailableSelectedRepos "$_requestedSelectedRepos")
+        if [[ $_selectedRepos != "$_requestedSelectedRepos" ]]; then
+            printf '%bLinking available shader repos only:%b %s\n' "$_YLW" "$_R" "${_selectedRepos:-<none>}"
+        fi
     else
         printf '%bNo shader repos selected — ReShade will have no shaders linked.%b\n' "$_YLW" "$_R"
     fi
@@ -251,7 +249,10 @@ linkD3dcompilerToWineprefix "$exeArch"
 # Z0040
 
 # Z0045
-withProgress "Linking ReShade to game directory..." linkGameFilesForInstall
+if [[ $_shaderDownloadSuccess -eq 0 && -n $_selectedRepos ]]; then
+    printf '%bWarning: one or more shader repositories could not be downloaded. Linking will proceed with available repos only.%b\n' "$_YLW" "$_R"
+fi
+withProgress "Building and linking ReShade shaders to game directory..." linkGameFilesForInstall
 # Z0045
 
 # Persist installation details so future runs can skip the DLL dialog
@@ -279,8 +280,9 @@ printf '%bNon-Steam — run the game with:%b\n  %b%s%b\n' \
     "$_GRN$_B" "$_R" "$_CYN$_B" "$gameEnvVar" "$_R"
 printf '\n%bReShade first-run setup:%b\n' "$_GRN$_B" "$_R"
 printf '  In the ReShade overlay, open the %bSettings%b tab.\n' "$_B" "$_R"
-printf '  Ensure shader/texture paths point inside: %b%s/ReShade_shaders/Merged/%b\n' \
+printf '  Shader paths have been written to ReShade.ini pointing inside: %b%s/ReShade_shaders/Merged/%b\n' \
     "$_CYN" "$gamePath" "$_R"
+printf '  If an existing ReShade.ini was already present it was preserved — verify paths in Settings if shaders do not load.\n'
 printf '  Then go to the %bHome%b tab and click %bReload%b.\n' "$_B" "$_R" "$_B" "$_R"
 if [[ -z $WINEPREFIX ]]; then
     printf '\n%bNote:%b ReShade 6.5+ also requires d3dcompiler_47.dll inside the game'"'"'s Wine/Proton prefix.\n' "$_YLW$_B" "$_R"
@@ -293,6 +295,6 @@ if [[ $_UI_BACKEND != cli ]]; then
     if [[ $_clipCopied -eq 1 ]]; then
         _summary+="\n\n(Already copied to clipboard)"
     fi
-    _summary+="\n\n2. Open the ReShade overlay in-game (usually Ctrl+Shift+Backspace)\n\n3. Go to Settings tab and verify shader paths point to:\n$gamePath/ReShade_shaders/Merged/\n\n4. Click Home tab and Reload"
+    _summary+="\n\n2. Open the ReShade overlay in-game (usually Ctrl+Shift+Backspace)\n\n3. Shader paths are pre-configured in ReShade.ini to:\n$gamePath/ReShade_shaders/Merged/\n   If an existing ReShade.ini was preserved, verify paths in the Settings tab.\n\n4. Click Home tab and Reload"
     ui_msgbox "ReShade - Installation Complete" "$_summary" 18 78
 fi

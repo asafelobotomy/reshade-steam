@@ -12,7 +12,7 @@ function init_runtime_config() {
     # shellcheck disable=SC2034
     COMMON_OVERRIDES="d3d8 d3d9 d3d11 d3d12 ddraw dinput8 dxgi opengl32"
     # shellcheck disable=SC2034
-    REQUIRED_EXECUTABLES=(7z curl file git grep sed sha256sum)
+    REQUIRED_EXECUTABLES=(7z curl file git grep python3 sed sha256sum)
     XDG_DATA_HOME=${XDG_DATA_HOME:-"$HOME/.local/share"}
     UI_BACKEND=${UI_BACKEND:-auto}
 
@@ -54,12 +54,7 @@ function init_runtime_config() {
 
     # shellcheck disable=SC2034
     RESHADE_PATH="$MAIN_PATH/reshade"
-    local _tmp_path="${MAIN_PATH#/home/"$USER"/}"
-    # shellcheck disable=SC2034
-    WINE_MAIN_PATH="${_tmp_path//\//\\\\}"
-
     UPDATE_RESHADE=${UPDATE_RESHADE:-1}
-    VULKAN_SUPPORT=${VULKAN_SUPPORT:-0}
     GLOBAL_INI=${GLOBAL_INI:-"ReShade.ini"}
     SHADER_REPOS=${SHADER_REPOS:-"https://github.com/CeeJayDK/SweetFX|sweetfx-shaders||SMAA, CAS, LumaSharpen, Technicolor, FilmGrain;https://github.com/martymcmodding/iMMERSE|immerse-shaders||SMAA, MXAO ambient occlusion, depth-aware Sharpen;https://github.com/BlueSkyDefender/AstrayFX|astrayfx-shaders||DLAA+, RadiantGI, Clarity, Smart_Sharp;https://github.com/prod80/prod80-ReShade-Repository|prod80-shaders||Full colour-grading suite, LUTs, Bloom, Sharpening;https://github.com/crosire/reshade-shaders|reshade-shaders|slim|Official built-ins: Deband, DisplayDepth, UIMask;https://github.com/Fubaxiusz/fubax-shaders|fubax-shaders||FilmicSharpen, Prism, Aspect Ratio, SimpleGrain;https://github.com/FransBouma/OtisFX|otis-fx||CinematicDOF, AdaptiveFog, Emphasize, DepthHaze;https://github.com/martymcmodding/qUINT|quintfx||Lightroom grading, SSR, MXAO, Bloom, Deband;https://github.com/LordOfLunacy/Insane-Shaders|insane-shaders||Oilify, ReVeil, ContrastStretch, BilateralComic;https://github.com/mj-ehsan/NiceGuy-Shaders|niceguy-shaders||Volumetric Fog V2, NGLighting, NiceGuy Lamps;https://github.com/Daodan317081/reshade-shaders|daodan-shaders||ColorIsolation, Comic outlines, AspectRatioComposition;https://github.com/rj200/Glamarye_Fast_Effects_for_ReShade|glamarye-fx||All-in-one FXAA + Sharpen + AO + DoF (low GPU cost);https://github.com/luluco250/FXShaders|luluco250-fx||NeoBloom, HexLensFlare, NormalMap, ArcaneBloom;https://github.com/LordKobra/CobraFX|cobra-fx||Gravity, ColorSort, RealLongExposure;https://github.com/originalnicodr/CorgiFX|corgi-fx||FreezeShot, MagnifyingGlass, AspectRatioMultiGrid;https://github.com/TheGordinho/MLUT|mlut-shaders||Multi-LUT pack: film, Instagram, cinematic presets;https://github.com/AlucardDH/dh-reshade-shaders|alucard-shaders||DH_UBER_RT (GI + AO + SSR combined), dh_anime;https://github.com/lordbean-git/reshade-shaders|lordbean-shaders||HQAA (Hybrid FXAA+SMAA), FSMAA, ASSMAA"}
     RESHADE_VERSION=${RESHADE_VERSION:-"latest"}

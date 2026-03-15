@@ -1,0 +1,36 @@
+{
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "github-token",
+      "description": "GitHub Personal Access Token",
+      "password": true
+    }
+  ],
+  "servers": {
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${input:github-token}"
+      }
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ]
+    },
+    "git": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-git",
+        "--repository",
+        "."
+      ]
+    }
+  }
+}

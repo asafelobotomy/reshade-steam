@@ -20,6 +20,8 @@ source "$REPO_DIR/lib/config.sh"
 source "$REPO_DIR/lib/state.sh"
 source "$REPO_DIR/lib/shaders.sh"
 source "$REPO_DIR/lib/steam.sh"
+source "$REPO_DIR/lib/flow.sh"
 
 _UI_BACKEND=cli
 export GLOBAL_INI=ReShade.ini
+export COMMON_OVERRIDES="d3d8 d3d9 d3d11 d3d12 ddraw dinput8 dxgi opengl32"

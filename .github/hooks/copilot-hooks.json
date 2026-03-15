@@ -1,0 +1,60 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "./.github/hooks/scripts/session-start.sh",
+        "windows": "powershell -File .github\\hooks\\scripts\\session-start.ps1",
+        "timeout": 10
+      }
+    ],
+    "PreToolUse": [
+      {
+        "type": "command",
+        "command": "./.github/hooks/scripts/guard-destructive.sh",
+        "windows": "powershell -File .github\\hooks\\scripts\\guard-destructive.ps1",
+        "timeout": 5
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "./.github/hooks/scripts/post-edit-lint.sh",
+        "windows": "powershell -File .github\\hooks\\scripts\\post-edit-lint.ps1",
+        "timeout": 30
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "./.github/hooks/scripts/enforce-retrospective.sh",
+        "windows": "powershell -File .github\\hooks\\scripts\\enforce-retrospective.ps1",
+        "timeout": 5
+      }
+    ],
+    "PreCompact": [
+      {
+        "type": "command",
+        "command": "./.github/hooks/scripts/save-context.sh",
+        "windows": "powershell -File .github\\hooks\\scripts\\save-context.ps1",
+        "timeout": 10
+      }
+    ],
+    "SubagentStart": [
+      {
+        "type": "command",
+        "command": "./.github/hooks/scripts/subagent-start.sh",
+        "windows": "powershell -File .github\\hooks\\scripts\\subagent-start.ps1",
+        "timeout": 5
+      }
+    ],
+    "SubagentStop": [
+      {
+        "type": "command",
+        "command": "./.github/hooks/scripts/subagent-stop.sh",
+        "windows": "powershell -File .github\\hooks\\scripts\\subagent-stop.ps1",
+        "timeout": 5
+      }
+    ]
+  }
+}

@@ -10,15 +10,19 @@ See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Quick start
 
+Requirements: `grep`, `7z`, `curl`, `git`, `file`, `python3`, `sed`, and `sha256sum`.
+
 ```bash
 # Download
-curl -LO https://github.com/asafelobotomy/reshade-steam-proton/raw/main/reshade-linux.sh
+curl -LO https://github.com/asafelobotomy/reshade-steam/raw/main/reshade-linux.sh
 
 # Run
 chmod u+x reshade-linux.sh && ./reshade-linux.sh
 ```
 
 > [!TIP]
+> Install `python3` for exact Steam metadata parsing and DLL detection.
+>
 > Install `yad` for a graphical wrapper on Linux desktops. If `yad` is unavailable, the script uses `whiptail` or `dialog` for a terminal UI, then falls back to plain CLI prompts.
 
 To force a backend manually, set `UI_BACKEND` to `auto`, `yad`, `whiptail`, `dialog`, or `cli`.
@@ -80,6 +84,8 @@ After downloading a new version of ReShade, re-link all tracked games without an
 
 State files in `~/.local/share/reshade/game-state/` record the DLL, architecture, game path, and selected shader repos for each previously installed game. `--update-all` reads these and re-creates each game's own `ReShade_shaders/` link and per-game config.
 
+If a tracked shader repository is unavailable during install or batch update, the state file is rewritten to match the shader repos that are actually available locally, so future runs reflect what is really linked.
+
 ---
 
 ## Environment variables
@@ -104,9 +110,8 @@ VARIABLE=value ./reshade-linux.sh
 | `WINEPREFIX` | *(auto)* | Force a specific Wine prefix; auto-detected from `compatdata/` otherwise. |
 | `DELETE_RESHADE_FILES` | `0` | Also delete `ReShade.log` and `ReShadePreset.ini` when uninstalling. |
 | `FORCE_RESHADE_UPDATE_CHECK` | `0` | Bypass the 4-hour update check throttle. |
-| `VULKAN_SUPPORT` | `0` | Enable the experimental Vulkan registry path (currently non-functional). |
 
-For full documentation of every variable and flag, see the [comments at the top of the script](https://github.com/asafelobotomy/reshade-steam-proton/blob/main/reshade-linux.sh#L21).
+For full documentation of every variable and flag, see the [comments at the top of the script](https://github.com/asafelobotomy/reshade-steam/blob/main/reshade-linux.sh#L21).
 
 ## GUI launcher
 
@@ -116,7 +121,7 @@ If you want to launch the graphical wrapper directly, run:
 ./reshade-linux-gui.sh
 ```
 
-That wrapper forces `UI_BACKEND=yad` and starts [reshade-linux.sh](reshade-linux.sh). For desktop packaging, the repository also includes an AppImage-style launcher and desktop entry under `appimage/AppDir/`.
+That wrapper prefers `UI_BACKEND=yad` when `yad` is installed and otherwise falls back to the default backend selection before starting [reshade-linux.sh](reshade-linux.sh). For desktop packaging, the repository also includes an AppImage-style launcher and desktop entry under `appimage/AppDir/`.
 
 ## Repository layout
 
@@ -130,7 +135,7 @@ That wrapper forces `UI_BACKEND=yad` and starts [reshade-linux.sh](reshade-linux
 
 ## Alternatives
 
-For native Vulkan games, or Windows games running through DXVK/VKD3D, consider:
+For native Vulkan games, or Windows games running through DXVK/VKD3D, use:
 
 - **[vkBasalt](https://github.com/DadSchoorse/vkBasalt)** — post-processing layer for Vulkan; works with native Linux games, DXVK (D3D9–D3D11), and VKD3D (D3D12)
 - **vkBasalt via [Gamescope](https://github.com/Plagman/gamescope/)** — run vkBasalt on the compositor instead of the game, which works for any game Gamescope wraps

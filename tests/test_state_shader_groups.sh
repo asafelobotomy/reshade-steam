@@ -52,6 +52,11 @@ test_state_explicit_empty_selected_repos_stays_empty() {
     [[ -z "$_repos" ]]
 }
 
+test_state_can_read_named_field() {
+    writeGameState "field" "/games/field" "dxgi" "64" "alpha,beta" "999"
+    [[ "$(readGameStateField "$MAIN_PATH/game-state/field.state" dll)" == "dxgi" ]]
+}
+
 test_state_checklist_marks_saved_repo_on() {
     local _state
     _state=$(repoChecklistState "alpha,beta" "alpha")
@@ -62,6 +67,18 @@ test_state_checklist_uses_exact_repo_match() {
     local _state
     _state=$(repoChecklistState "prod80-shaders" "prod80")
     [[ "$_state" == "OFF" ]]
+}
+
+test_state_detects_known_dll_override() {
+    isKnownDllOverride "dxgi"
+}
+
+test_state_formats_installed_game_label() {
+    local _game_dir="$TEST_TEMP_DIR/game-a"
+    mkdir -p "$_game_dir"
+    writeGameState "123456" "$_game_dir" "dxgi" "64" "alpha" "123456"
+    ln -s /tmp/fake-dxgi "$_game_dir/dxgi.dll"
+    [[ "$(formatDetectedGameLabel "Example Game" "123456" "$_game_dir")" == "✔ Example Game" ]]
 }
 
 test_state_default_repo_names_support_descriptions() {
@@ -86,6 +103,78 @@ test_shader_build_supports_description_without_branch() {
     create_mock_shader_repo "alpha"
     buildGameShaderDir "55555" "alpha"
     [[ -L "$MAIN_PATH/game-shaders/55555/Merged/Shaders/alpha.fx" ]]
+}
+
+test_shader_available_selected_repos_only_returns_existing_dirs() {
+    export SHADER_REPOS="https://example.com/a|alpha;https://example.com/b|beta"
+    create_mock_shader_repo "alpha"
+    [[ "$(getAvailableSelectedRepos "alpha,beta")" == "alpha" ]]
+}
+
+test_shader_cli_selection_returns_names_only() {
+    local _output
+    export SHADER_REPOS="https://example.com/a|alpha||Alpha repo"
+    _UI_BACKEND=cli
+    _output=$(printf '\n' | selectShaders "alpha" 2>/dev/null)
+    [[ "$_output" == "alpha" ]]
+}
+
+test_batch_update_skips_invalid_state_file() {
+    local _game_dir="$TEST_TEMP_DIR/batch-invalid"
+    mkdir -p "$MAIN_PATH/game-state" "$_game_dir"
+    cat > "$MAIN_PATH/game-state/invalid.state" <<EOF
+dll=not-a-dll
+arch=wat
+gamePath=$_game_dir
+selected_repos=alpha
+app_id=1000
+EOF
+
+    _BATCH_UPDATE=1
+    local _output
+    _output=$( ( maybeHandleBatchUpdate ) 2>&1 )
+    [[ "$_output" == *"invalid or stale state file"* ]]
+}
+
+test_batch_update_skips_install_prompt() {
+    local _output
+    _output=$( (
+        _BATCH_UPDATE=1
+        _UI_BACKEND=cli
+        checkStdin() {
+            printf 'prompted\n' >&2
+            return 1
+        }
+        maybeHandleDirectXUninstall
+    ) 2>&1 )
+    [[ "$_output" != *"Do you want to (i)nstall or (u)ninstall ReShade"* ]]
+}
+
+test_batch_update_persists_available_shader_subset() {
+    local _game_dir="$TEST_TEMP_DIR/batch-game"
+    mkdir -p "$MAIN_PATH/game-state" "$RESHADE_PATH/latest" "$_game_dir"
+    touch "$RESHADE_PATH/latest/ReShade64.dll" "$RESHADE_PATH/latest/ReShade32.dll"
+    touch "$MAIN_PATH/d3dcompiler_47.dll.64"
+    export SHADER_REPOS="https://example.com/a|alpha;https://example.com/b|beta"
+    create_mock_shader_repo "alpha"
+    cat > "$MAIN_PATH/game-state/2000.state" <<EOF
+dll=dxgi
+arch=64
+gamePath=$_game_dir
+selected_repos=alpha,beta
+app_id=2000
+EOF
+
+    ensureSelectedShaderRepos() {
+        return 1
+    }
+
+    _BATCH_UPDATE=1
+    ( maybeHandleBatchUpdate ) >/dev/null 2>&1
+    grep -q '^selected_repos=alpha$' "$MAIN_PATH/game-state/2000.state"
+    [[ -L "$_game_dir/ReShade_shaders" ]]
+    [[ -L "$MAIN_PATH/game-shaders/2000/Merged/Shaders/alpha.fx" ]]
+    [[ ! -e "$MAIN_PATH/game-shaders/2000/Merged/Shaders/beta.fx" ]]
 }
 
 test_release_metadata_version_matches_changelog_headline() {
@@ -172,8 +261,11 @@ run_state_and_shader_tests() {
     run_test "Non-Steam install key" test_state_builds_path_key_for_nonsteam_game
     run_test "Legacy state defaults to all repos" test_state_missing_selected_repos_defaults_to_all
     run_test "Explicit empty repo state stays empty" test_state_explicit_empty_selected_repos_stays_empty
+    run_test "Read named state field" test_state_can_read_named_field
     run_test "Checklist marks saved repo on" test_state_checklist_marks_saved_repo_on
     run_test "Checklist uses exact repo match" test_state_checklist_uses_exact_repo_match
+    run_test "Recognizes known DLL override" test_state_detects_known_dll_override
+    run_test "Formats installed game label" test_state_formats_installed_game_label
     run_test "Default repo parsing supports descriptions" test_state_default_repo_names_support_descriptions
     run_test "Shader repo parser keeps empty branch" test_state_shader_repo_parser_keeps_empty_branch_with_description
     echo ""
@@ -190,6 +282,11 @@ run_state_and_shader_tests() {
     run_test "Includes external shaders" test_shader_build_includes_external
     run_test "Rebuild replaces previous" test_shader_rebuild_replaces_previous
     run_test "Build supports description without branch" test_shader_build_supports_description_without_branch
+    run_test "Available repos only include existing dirs" test_shader_available_selected_repos_only_returns_existing_dirs
+    run_test "CLI shader selection returns names only" test_shader_cli_selection_returns_names_only
     run_test "Per-game ReShade.ini uses relative paths" test_game_ini_is_per_game_and_relative
+    run_test "Batch update skips invalid state" test_batch_update_skips_invalid_state_file
+    run_test "Batch update skips install prompt" test_batch_update_skips_install_prompt
+    run_test "Batch update persists available shader subset" test_batch_update_persists_available_shader_subset
     echo ""
 }
