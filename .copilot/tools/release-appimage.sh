@@ -137,6 +137,11 @@ function build_appimage() {
     cp "$repo_root/reshade-linux.sh" "$repo_root/reshade-linux-gui.sh" "$repo_root/VERSION" "$app_dir/usr/bin/"
     cp -a "$repo_root/lib" "$app_dir/usr/bin/"
 
+    # Stamp the current version into the desktop entry.
+    sed -i "s/^X-AppImage-Version=.*/X-AppImage-Version=$version/" \
+        "$app_dir/io.github.asafelobotomy.reshade-steam.desktop"
+
+    # Place the SVG icon at root (for .DirIcon) and in the standard hicolor path.
     cat > "$app_dir/reshade-linux.svg" <<'EOF'
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
   <rect width="256" height="256" rx="44" fill="#101820"/>
@@ -144,11 +149,21 @@ function build_appimage() {
   <path d="M76 76h54c42 0 50 23 50 41 0 22-14 38-39 42l39 47h-33l-35-43h-11v43H76V76zm25 22v43h24c20 0 29-8 29-22 0-15-10-21-29-21h-24z" fill="#f1faee"/>
 </svg>
 EOF
-
     ln -sf reshade-linux.svg "$app_dir/.DirIcon"
+
+    # Install icons in hicolor theme so AppImage managers find them.
+    local _icon_dir="$app_dir/usr/share/icons/hicolor"
+    mkdir -p "$_icon_dir/scalable/apps" "$_icon_dir/256x256/apps"
+    cp "$app_dir/reshade-linux.svg" "$_icon_dir/scalable/apps/reshade-linux.svg"
+    cp "$app_dir/reshade-linux.png" "$_icon_dir/256x256/apps/reshade-linux.png"
+
+    # Install AppStream metainfo.
+    mkdir -p "$app_dir/usr/share/metainfo"
+    cp "$app_dir/io.github.asafelobotomy.reshade-steam.metainfo.xml" "$app_dir/usr/share/metainfo/"
+
     mkdir -p "$(dirname "$artifact_path")"
 
-    ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool_bin" --no-appstream "$app_dir" "$artifact_path"
+    ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool_bin" "$app_dir" "$artifact_path"
     UI_BACKEND=cli "$artifact_path" --help >/dev/null
 }
 

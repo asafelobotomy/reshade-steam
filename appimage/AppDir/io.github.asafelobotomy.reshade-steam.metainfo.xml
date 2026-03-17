@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.asafelobotomy.reshade-steam</id>
+  <name>ReShade Linux</name>
+  <summary>Install ReShade for Wine and Proton games on Linux</summary>
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>GPL-2.0-or-later</project_license>
+  <developer id="io.github.asafelobotomy">
+    <name>asafelobotomy</name>
+  </developer>
+  <description>
+    <p>
+      Download ReShade and shader repositories, then link them into any Windows
+      game running under Wine or Proton on Linux. Provides automatic Steam game
+      detection, per-game shader selection, and a graphical or terminal UI.
+    </p>
+    <p>Features include:</p>
+    <ul>
+      <li>Automatic Steam library scanning and game detection</li>
+      <li>PE import table analysis to pick the correct DLL override</li>
+      <li>Per-game shader selection from 18 curated repositories</li>
+      <li>Batch update for all installed games at once</li>
+      <li>Flatpak and native Steam auto-detection</li>
+      <li>Graphical (yad), terminal (whiptail/dialog), and CLI interfaces</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.asafelobotomy.reshade-steam.desktop</launchable>
+  <url type="homepage">https://github.com/asafelobotomy/reshade-steam</url>
+  <url type="bugtracker">https://github.com/asafelobotomy/reshade-steam/issues</url>
+  <url type="vcs-browser">https://github.com/asafelobotomy/reshade-steam</url>
+  <provides>
+    <binary>reshade-linux.sh</binary>
+  </provides>
+  <categories>
+    <category>Game</category>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.3.0" date="2026-03-17">
+      <description>
+        <p>Add "Update all installed games" option in the install/uninstall dialog. Fix shader compilation failures when a repo containing shared .fxh headers was not selected.</p>
+      </description>
+    </release>
+    <release version="1.2.1" date="2026-03-17">
+      <description>
+        <p>Diagnostics and test helpers now include explicit ShellCheck hints for clean repository-wide analysis.</p>
+      </description>
+    </release>
+    <release version="1.2.0" date="2026-03-12">
+      <description>
+        <p>Single-source versioning, rich shader repository descriptions, expanded to 18 curated repos, and improved game detection.</p>
+      </description>
+    </release>
+  </releases>
+</component>
