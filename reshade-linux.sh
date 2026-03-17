@@ -57,7 +57,7 @@ SEPARATOR="---------------------------------------------------------------------
 # Read version from co-located VERSION file; fall back to hard-coded string for
 # users who download just the .sh without the rest of the repository.
 # shellcheck disable=SC2034  # Consumed by flow helpers sourced from lib/flow.sh.
-SCRIPT_VERSION="$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || printf '1.2.1')"
+SCRIPT_VERSION="$(cat "$SCRIPT_DIR/VERSION" 2>/dev/null || printf '1.3.0')"
 init_runtime_config
 
 # Parse command-line arguments.

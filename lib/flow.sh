@@ -137,17 +137,43 @@ function resolveBatchUpdateState() {
 
 function maybeHandleDirectXUninstall() {
     local _action _pick LINKS link sysDir
+    local _hasInstalled=0
 
     [[ $_BATCH_UPDATE -eq 1 ]] && return
 
+    # Check if any games are installed (for the update-all option).
+    if [[ -d "$MAIN_PATH/game-state" ]] && compgen -G "$MAIN_PATH/game-state/*.state" &>/dev/null; then
+        _hasInstalled=1
+    fi
+
     _action="i"
     if [[ $_UI_BACKEND != cli ]]; then
+        local -a _radioRows=(install "Install ReShade for a game" ON
+                              uninstall "Uninstall ReShade for a game" OFF)
+        local _listH=2 _boxH=12
+        if [[ $_hasInstalled -eq 1 ]]; then
+            _radioRows+=(update-all "Update all installed games" OFF)
+            _listH=3
+            _boxH=14
+        fi
         _pick=$(ui_radiolist "ReShade" "What would you like to do?" \
-            12 70 2 install "Install ReShade for a game" ON uninstall "Uninstall ReShade for a game" OFF) || exit 0
-        [[ $_pick == uninstall ]] && _action="u"
+            "$_boxH" 70 "$_listH" "${_radioRows[@]}") || exit 0
+        case "$_pick" in
+            uninstall)  _action="u" ;;
+            update-all) _action="a" ;;
+        esac
     else
-        echo "Do you want to (i)nstall or (u)ninstall ReShade for a DirectX or OpenGL game?"
-        _action=$(checkStdin "(i/u): " "^(i|u)$") || exit 1
+        if [[ $_hasInstalled -eq 1 ]]; then
+            echo "Do you want to (i)nstall, (u)ninstall, or update (a)ll installed games?"
+            _action=$(checkStdin "(i/u/a): " "^(i|u|a)$") || exit 1
+        else
+            echo "Do you want to (i)nstall or (u)ninstall ReShade for a DirectX or OpenGL game?"
+            _action=$(checkStdin "(i/u): " "^(i|u)$") || exit 1
+        fi
+    fi
+    if [[ $_action == "a" ]]; then
+        _BATCH_UPDATE=1
+        return
     fi
     [[ $_action == "u" ]] || return
 

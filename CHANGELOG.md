@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, adapted for this repository.
 
+## [1.3.0] - 2026-03-17
+
+### Added in 1.3.0
+
+- "Update all installed games" option in the install/uninstall dialog, so users no longer need the `--update-all` CLI flag.
+
+### Fixed in 1.3.0
+
+- Shader compilation failures when a repo containing shared `.fxh` headers (e.g. `ReShade.fxh`, `ReShadeUI.fxh`) was not selected. Include files from all installed repos are now always linked.
+
 ## [1.2.1] - 2026-03-17
 
 ### Changed in 1.2.1
