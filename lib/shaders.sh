@@ -94,6 +94,18 @@ function buildGameShaderDir() {
             "$_CYN$_B" "$_currentIndex" "$_selectedCount" "$_R" "$_shaderRepoName"
         mergeShaderDirsTo "ReShade_shaders" "$_shaderRepoName" "$_outBase"
     done
+    # Always link .fxh include files from all installed repos, even those
+    # not selected for this game.  Header files like ReShade.fxh/ReShadeUI.fxh
+    # are shared dependencies that most shader effects #include at compile time.
+    _seen=()
+    for _entry in "${_allRepos[@]}"; do
+        parseShaderRepoEntry "$_entry"
+        [[ -z $_shaderRepoName ]] && continue
+        [[ -n ${_seen["$_shaderRepoName"]+x} ]] && continue
+        _seen["$_shaderRepoName"]=1
+        [[ ! -d "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" ]] && continue
+        linkRepoIncludesTo "$MAIN_PATH/ReShade_shaders/$_shaderRepoName" "$_outBase"
+    done
     if [[ -d "$MAIN_PATH/External_shaders" ]]; then
         setProgressText "Building shader directory\n[extra] Merging external shaders"
         logDebug "buildGameShaderDir external shaders"
@@ -245,6 +257,31 @@ function selectShaders() {
     fi
     local IFS=','
     echo "${_selected_names[*]}"
+}
+
+# Link only .fxh (header/include) files from a repo's Shaders directory into
+# the merged output.  These are shared dependencies (e.g. ReShade.fxh) that
+# other repos' .fx effects #include at compile time.
+# $1: repo root directory  $2: output base directory
+function linkRepoIncludesTo() {
+    local _repoRoot="$1" _outBase="$2" _shadersDir _outDir _file _basename
+    if [[ -d "$_repoRoot/Shaders" ]]; then
+        _shadersDir="$_repoRoot/Shaders"
+    else
+        _shadersDir=$(find "$_repoRoot" \
+            -maxdepth 4 \
+            \( -path '*/.git' -o -path '*/.github' -o -path '*/download' \) -prune -o \
+            -type d -name "Shaders" -print -quit)
+    fi
+    [[ -z $_shadersDir || ! -d $_shadersDir ]] && return
+    _outDir="$_outBase/Shaders"
+    mkdir -p "$_outDir"
+    for _file in "$_shadersDir"/*.fxh; do
+        [[ ! -f $_file ]] && continue
+        _basename="${_file##*/}"
+        [[ -L "$_outDir/$_basename" ]] && continue
+        ln -s "$(realpath "$_file")" "$_outDir/"
+    done
 }
 
 # Like linkShaderFiles but writes into an arbitrary output base directory.

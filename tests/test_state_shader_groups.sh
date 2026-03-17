@@ -289,6 +289,17 @@ test_shader_build_excludes_unselected_repo() {
     [[ ! -e "$MAIN_PATH/game-shaders/22222/Merged/Shaders/alpha-shaders.fx" ]]
 }
 
+test_shader_build_includes_fxh_from_unselected_repo() {
+    export SHADER_REPOS="https://example.com/a|alpha-shaders;https://example.com/b|beta-shaders"
+    create_mock_shader_repo "alpha-shaders"
+    create_mock_shader_repo "beta-shaders"
+    # Only select alpha — beta's .fx must be absent but its .fxh must be present
+    buildGameShaderDir "55555" "alpha-shaders"
+    [[ -L "$MAIN_PATH/game-shaders/55555/Merged/Shaders/alpha-shaders.fx" ]] || return 1
+    [[ ! -e "$MAIN_PATH/game-shaders/55555/Merged/Shaders/beta-shaders.fx" ]] || return 1
+    [[ -L "$MAIN_PATH/game-shaders/55555/Merged/Shaders/beta-shaders.fxh" ]]
+}
+
 test_shader_build_includes_external() {
     export SHADER_REPOS="https://example.com/r|some-repo"
     create_mock_shader_repo "some-repo"
@@ -343,6 +354,7 @@ run_state_and_shader_tests() {
     run_test "Build creates output dir" test_shader_build_creates_dir
     run_test "Links only selected repo" test_shader_build_links_selected_repo
     run_test "Excludes unselected repo" test_shader_build_excludes_unselected_repo
+    run_test "Includes .fxh from unselected repo" test_shader_build_includes_fxh_from_unselected_repo
     run_test "Includes external shaders" test_shader_build_includes_external
     run_test "Rebuild replaces previous" test_shader_rebuild_replaces_previous
     run_test "Build supports description without branch" test_shader_build_supports_description_without_branch
